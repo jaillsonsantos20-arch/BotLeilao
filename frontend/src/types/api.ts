@@ -85,11 +85,26 @@ export interface AuctionEvent {
   tenantId: string;
   name: string;
   description: string | null;
+  groupId: string | null;
+  periodicStatusMinutes: number | null;
   status: AuctionEventStatus;
   createdAt: string;
   updatedAt: string;
   itemCount: number;
   auctionCount: number;
+}
+
+export interface AuctionListItem {
+  number: number;
+  auctionId: string | null;
+  itemId: string;
+  name: string;
+  initialValue: string;
+  value: string;
+  imageUrl: string | null;
+  status: string;
+  leader: { name: string; amount: string } | null;
+  bidCount: number;
 }
 
 export interface Item {

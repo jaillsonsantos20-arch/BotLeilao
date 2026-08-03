@@ -3,10 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown,
   ChevronUp,
+  CircleStop,
   FileText,
   FolderPlus,
   Gavel,
   ImagePlus,
+  ListChecks,
   Loader2,
   Package,
   Plus,
@@ -179,6 +181,8 @@ export function AuctionsPage() {
   const [creatingEvent, setCreatingEvent] = useState(false);
   const [eventName, setEventName] = useState('');
   const [eventDescription, setEventDescription] = useState('');
+  const [eventGroupId, setEventGroupId] = useState('');
+  const [eventStatusInterval, setEventStatusInterval] = useState('');
   const [eventFormError, setEventFormError] = useState<string | null>(null);
 
   const [eventError, setEventError] = useState<string | null>(null);
@@ -193,6 +197,9 @@ export function AuctionsPage() {
   const [auctionTarget, setAuctionTarget] = useState<Item | null>(null);
   const [auctionGroupId, setAuctionGroupId] = useState('');
   const [auctionError, setAuctionError] = useState<string | null>(null);
+
+  const [listGroupId, setListGroupId] = useState('');
+  const [listError, setListError] = useState<string | null>(null);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['auction-events'] });
@@ -212,6 +219,10 @@ export function AuctionsPage() {
       const response = await api.post<ApiEnvelope<AuctionEvent>>('/auction-events', {
         name: eventName,
         description: eventDescription || undefined,
+        groupId: eventGroupId || undefined,
+        periodicStatusMinutes: eventStatusInterval
+          ? Math.max(0, parseInt(eventStatusInterval, 10))
+          : 0,
       });
       return response.data.data;
     },
@@ -220,8 +231,11 @@ export function AuctionsPage() {
       setCreatingEvent(false);
       setEventName('');
       setEventDescription('');
+      setEventGroupId('');
+      setEventStatusInterval('');
       setEventFormError(null);
       setSelectedEventId(event.id);
+      setListGroupId(event.groupId ?? '');
     },
     onError: (err) => setEventFormError(extractError(err, 'Falha ao criar o leilão.')),
   });
@@ -232,6 +246,33 @@ export function AuctionsPage() {
     },
     onSuccess: () => invalidate(),
     onError: (err) => setEventError(extractError(err, 'Falha ao encerrar o leilão.')),
+  });
+
+  const startList = useMutation({
+    mutationFn: async (params: { eventId: string; groupId: string }) => {
+      const response = await api.post<ApiEnvelope<{ itemCount: number }>>(
+        `/auction-events/${params.eventId}/start`,
+        { groupId: params.groupId },
+      );
+      return response.data.data;
+    },
+    onSuccess: () => {
+      invalidate();
+      setListError(null);
+    },
+    onError: (err) => setListError(extractError(err, 'Falha ao iniciar a lista no grupo.')),
+  });
+
+  const closeListItem = useMutation({
+    mutationFn: async (params: { eventId: string; auctionId: string }) => {
+      const response = await api.post<ApiEnvelope<{ itemName: string }>>(
+        `/auction-events/${params.eventId}/items/${params.auctionId}/close`,
+      );
+      return response.data.data;
+    },
+    onSuccess: () => invalidate(),
+    onError: (err) =>
+      setListError(extractError(err, 'Falha ao encerrar o item.')),
   });
 
   const removeEvent = useMutation({
@@ -385,6 +426,21 @@ export function AuctionsPage() {
     return map;
   }, [allAuctions.data]);
 
+  const openAuctionByItem = useMemo(() => {
+    const map = new Map<string, Auction>();
+    for (const auction of allAuctions.data ?? []) {
+      if (auction.status === 'OPEN' && auction.itemId && auction.auctionEventId === selectedEventId) {
+        map.set(auction.itemId, auction);
+      }
+    }
+    return map;
+  }, [allAuctions.data, selectedEventId]);
+
+  const selectedEventGroup = useMemo(
+    () => (selectedEvent ? groups.data?.find((g) => g.id === selectedEvent.groupId) ?? null : null),
+    [selectedEvent, groups.data],
+  );
+
   const [reportOpen, setReportOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [reportGenerated, setReportGenerated] = useState(false);
@@ -526,6 +582,44 @@ export function AuctionsPage() {
                   placeholder="Renda para a festa de São João"
                 />
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="event-group">Grupo do WhatsApp</Label>
+                  <select
+                    id="event-group"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    value={eventGroupId}
+                    onChange={(event) => setEventGroupId(event.target.value)}
+                  >
+                    <option value="">Definir depois</option>
+                    {groups.data?.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                        {group.openAuction ? ' (com leilão ativo)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Grupo onde o bot abrirá a lista de itens quando você iniciar.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="event-interval">Status automático (minutos)</Label>
+                  <Input
+                    id="event-interval"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={eventStatusInterval}
+                    onChange={(event) => setEventStatusInterval(event.target.value)}
+                    placeholder="0 = só via !status"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    O bot reenvia a lista de itens a cada X minutos. Deixe 0 para
+                    enviar somente quando pedirem *!status*.
+                  </p>
+                </div>
+              </div>
               <div>
                 <Button type="submit" disabled={createEvent.isPending}>
                   {createEvent.isPending && <Loader2 className="animate-spin" />}
@@ -593,7 +687,15 @@ export function AuctionsPage() {
                           <Button
                             size="sm"
                             variant={expanded ? 'secondary' : 'outline'}
-                            onClick={() => setSelectedEventId(expanded ? null : event.id)}
+                            onClick={() => {
+                              if (expanded) {
+                                setSelectedEventId(null);
+                              } else {
+                                setSelectedEventId(event.id);
+                                setListGroupId(event.groupId ?? '');
+                                setListError(null);
+                              }
+                            }}
                           >
                             {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
                             {expanded ? 'Fechar' : 'Abrir'}
@@ -673,6 +775,96 @@ export function AuctionsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-6">
+            <div className="rounded-md border p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="flex items-center gap-2 font-medium">
+                    <ListChecks className="size-4" />
+                    Iniciar lista no grupo
+                  </h4>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Abre um leilão simultâneo por item. Os participantes dão lances
+                    como <em>01 - 22,00</em>. Se um status periódico foi definido,
+                    o bot reenvia a lista automaticamente.
+                  </p>
+                </div>
+                {selectedEvent.periodicStatusMinutes ? (
+                  <Badge variant="outline">
+                    Status a cada {selectedEvent.periodicStatusMinutes} min
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">Status sob demanda (!status)</Badge>
+                )}
+              </div>
+              {!canLeilao ? (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  Nenhum grupo vinculado. Vá em Grupos e vincule um grupo do WhatsApp
+                  antes de iniciar uma lista.
+                </p>
+              ) : (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!selectedEventId) return;
+                    if (!listGroupId) {
+                      setListError('Selecione um grupo para abrir a lista.');
+                      return;
+                    }
+                    startList.mutate({ eventId: selectedEventId, groupId: listGroupId });
+                  }}
+                  className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"
+                >
+                  <div className="space-y-2">
+                    <Label htmlFor="list-group">Grupo do WhatsApp</Label>
+                    <select
+                      id="list-group"
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      value={listGroupId}
+                      onChange={(event) => setListGroupId(event.target.value)}
+                    >
+                      <option value="" disabled>
+                        Selecione um grupo
+                      </option>
+                      {groups.data?.map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                          {group.openAuction ? ' (com leilão ativo)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={
+                      startList.isPending ||
+                      selectedEvent.status === 'CLOSED' ||
+                      (selectedEvent.itemCount ?? 0) === 0 ||
+                      (!!listGroupId &&
+                        !groups.data?.some((g) => g.id === listGroupId && !g.openAuction))
+                    }
+                  >
+                    {startList.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <ListChecks className="size-4" />
+                    )}
+                    {startList.isPending ? 'Abrindo...' : 'Iniciar lista'}
+                  </Button>
+                </form>
+              )}
+              {selectedEventGroup && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Grupo configurado neste leilão: <strong>{selectedEventGroup.name}</strong>
+                  {selectedEventGroup.openAuction ? ' (com leilão ativo)' : ''}
+                </p>
+              )}
+              {listError && (
+                <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {listError}
+                </p>
+              )}
+            </div>
+
             <div className="rounded-md border p-4">
               <h4 className="mb-3 flex items-center gap-2 font-medium">
                 <ImagePlus className="size-4" />
@@ -829,6 +1021,33 @@ export function AuctionsPage() {
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-2">
+                                {item.status === 'ON_AUCTION' &&
+                                  selectedEvent.status === 'OPEN' &&
+                                  openAuctionByItem.get(item.id) && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={closeListItem.isPending}
+                                      onClick={() => {
+                                        const auction = openAuctionByItem.get(item.id);
+                                        if (
+                                          auction &&
+                                          window.confirm(
+                                            `Encerrar o item "${item.name}" e fixar o vencedor?`,
+                                          )
+                                        ) {
+                                          closeListItem.mutate({
+                                            eventId: selectedEventId!,
+                                            auctionId: auction.id,
+                                          });
+                                        }
+                                      }}
+                                      title="Encerra apenas este item da lista"
+                                    >
+                                      <CircleStop className="size-4" />
+                                      Encerrar item
+                                    </Button>
+                                  )}
                                 <Button
                                   size="sm"
                                   variant="outline"
