@@ -660,23 +660,14 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const { auction } = await this.auctionsService.placeBid(list.tenantId, {
+      await this.auctionsService.placeBid(list.tenantId, {
         auctionId: entry.auctionId,
         amount,
         participantPhone: context.senderId.split('@')[0],
         participantName: context.senderName ?? undefined,
       });
 
-      await this.reply(
-        context,
-        [
-          '✅ *LANCE REGISTRADO!*',
-          `🔢 Item Nº *${itemNumber}* — *${entry.name}*`,
-          `💵 Valor: *${formatCurrency(amount)}*`,
-          `👤 Líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
-          `⏱️ Item reiniciado: *${auction.durationSeconds}s*`,
-        ].join('\n'),
-      );
+      await this.reply(context, '✅ *Lance Registrado*');
 
       list.lastStatusAt = Date.now();
       this.listGroups.set(context.groupId, list);
