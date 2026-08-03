@@ -34,6 +34,11 @@ export class CreateItemDto {
   initialValue: number;
 
   @IsOptional()
+  @IsInt({ message: 'O nº do item deve ser um número inteiro.' })
+  @Min(1, { message: 'O nº do item deve ser maior que zero.' })
+  order?: number;
+
+  @IsOptional()
   @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de segundos.' })
   @Min(10, { message: 'A duração mínima é de 10 segundos.' })
   @Max(86400, { message: 'A duração máxima é de 24 horas.' })

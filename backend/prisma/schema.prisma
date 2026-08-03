@@ -223,6 +223,7 @@ model Item {
   initialValue    Decimal    @db.Decimal(12, 2)
   durationSeconds Int        @default(120)
   status          ItemStatus @default(AVAILABLE)
+  order           Int        @default(0) // nº do item na lista (lance "NN - VALOR")
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -247,6 +248,7 @@ model Group {
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   auctions Auction[]
+  auctionEvents AuctionEvent[]
 
   @@index([tenantId])
 }
@@ -282,20 +284,24 @@ model Auction {
 }
 
 model AuctionEvent {
-  id          String             @id @default(cuid())
-  tenantId    String
-  name        String
-  description String?
-  status      AuctionEventStatus @default(OPEN)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  id              String             @id @default(cuid())
+  tenantId        String
+  name            String
+  description     String?
+  groupId         String?
+  periodicStatusMinutes Int?
+  status          AuctionEventStatus @default(OPEN)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
-  tenant  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  items   Item[]
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group    Group?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  items    Item[]
   auctions Auction[]
 
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([groupId])
 }
 
 model Bid {

@@ -36,3 +36,30 @@ export interface ActiveAuctionMemory {
   warnedSecond: boolean;
   closed: boolean;
 }
+
+/**
+ * Estado de uma lista (evento) aberta em um grupo — vários itens simultâneos.
+ */
+export interface ActiveListMemory {
+  tenantId: string;
+  groupId: string; // whatsappGroupId
+  internalGroupId: string;
+  eventId: string;
+  eventName: string;
+  periodicStatusMinutes: number;
+  lastStatusAt: number;
+}
+
+/**
+ * Linha do status de uma lista (um item em leilão).
+ */
+export interface ListAuctionEntry {
+  number: number;
+  auctionId: string;
+  name: string;
+  status: any;
+  initialValue: any;
+  currentAmount: any;
+  leader: string | null;
+  bidCount: number;
+}

@@ -5,20 +5,21 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { Auction, AuctionStatus, Prisma } from '@prisma/client';
+import { Auction, AuctionEventStatus, AuctionStatus, ItemStatus, Prisma } from '@prisma/client';
 import { AuctionsService } from '../auctions/auctions.service';
 import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../../common/database/prisma.service';
 import {
   WHATSAPP_DB_SWEEP_INTERVAL_MS,
   WHATSAPP_DEFAULT_DURATION_SECONDS,
+  WHATSAPP_LIST_STATUS_INTERVAL_MS,
   WHATSAPP_MIN_DURATION_SECONDS,
   WHATSAPP_TICK_INTERVAL_MS,
   WHATSAPP_WARNING_FIRST_SECONDS,
   WHATSAPP_WARNING_SECOND_SECONDS,
 } from './whatsapp.constants';
 import { formatCurrency, imageUrlToLocalPath, parseAmount } from './whatsapp.utils';
-import { ActiveAuctionMemory, AuctionSetupState, WhatsAppGroupContext } from './whatsapp.types';
+import { ActiveAuctionMemory, ActiveListMemory, AuctionSetupState, ListAuctionEntry, WhatsAppGroupContext } from './whatsapp.types';
 
 export type MessageSender = (
   tenantId: string,
@@ -54,11 +55,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /** groupId -> leilão ativo em memória */
   private readonly active = new Map<string, ActiveAuctionMemory>();
 
+  /** whatsappGroupId -> lista (evento) ativa em memória */
+  private readonly listGroups = new Map<string, ActiveListMemory>();
+
   /** assinantes para envio de mensagens (desacopla o transporte) */
   private readonly subscribers = new Set<MessageSender>();
 
   private tickTimer: NodeJS.Timeout | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
+  private statusTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -72,19 +77,25 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     await this.loadActiveAuctions();
+    await this.loadActiveLists();
     this.tickTimer = setInterval(() => this.tick(), WHATSAPP_TICK_INTERVAL_MS);
     this.sweepTimer = setInterval(
       () => void this.sweepExpiredFromDb(),
       WHATSAPP_DB_SWEEP_INTERVAL_MS,
     );
+    this.statusTimer = setInterval(
+      () => this.tickListStatus(),
+      WHATSAPP_LIST_STATUS_INTERVAL_MS,
+    );
     this.logger.log(
-      `Motor de leilões iniciado com ${this.active.size} leilão(ões) recuperado(s).`,
+      `Motor de leilões iniciado com ${this.active.size} leilão(ões) e ${this.listGroups.size} lista(s) recuperado(s).`,
     );
   }
 
   onModuleDestroy(): void {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.statusTimer) clearInterval(this.statusTimer);
   }
 
   /**
@@ -121,6 +132,42 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Recupera listas (eventos) ativas do banco após restart.
+   */
+  private async loadActiveLists(): Promise<void> {
+    const auctionedEvents = await this.prisma.auction.findMany({
+      where: { status: AuctionStatus.OPEN, auctionEventId: { not: null } },
+      select: {
+        groupId: true,
+        tenantId: true,
+        auctionEvent: { select: { id: true, name: true, periodicStatusMinutes: true } },
+      },
+    });
+
+    const groups = await this.prisma.group.findMany();
+    const groupById = new Map(groups.map((g) => [g.id, g]));
+
+    const seen = new Set<string>();
+    for (const row of auctionedEvents) {
+      if (!row.auctionEvent) continue;
+      const group = groupById.get(row.groupId);
+      if (!group || !group.whatsappGroupId) continue;
+      if (seen.has(group.whatsappGroupId)) continue;
+      seen.add(group.whatsappGroupId);
+
+      this.listGroups.set(group.whatsappGroupId, {
+        tenantId: row.tenantId,
+        groupId: group.whatsappGroupId,
+        internalGroupId: group.id,
+        eventId: row.auctionEvent.id,
+        eventName: row.auctionEvent.name,
+        periodicStatusMinutes: row.auctionEvent.periodicStatusMinutes ?? 0,
+        lastStatusAt: Date.now(),
+      });
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Comandos
   // -------------------------------------------------------------------------
@@ -128,6 +175,28 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   async startSetup(context: WhatsAppGroupContext): Promise<string> {
     if (this.active.has(context.groupId)) {
       return '⚠️ Já existe um leilão em andamento neste grupo.';
+    }
+    if (this.listGroups.has(context.groupId)) {
+      return '⚠️ Já existe uma lista de itens em andamento neste grupo.';
+    }
+
+    // Modo lista: se o grupo tem um evento (leilão) pendente configurado no
+    // painel, !iniciar abre a lista de itens; caso contrário segue o fluxo
+    // clássico (item único).
+    const pending = await this.findPendingEventForGroup(context);
+    if (pending) {
+      try {
+        const list = await this.startListInGroup(
+          context.tenantId,
+          pending.internalGroupId,
+          pending.eventId,
+        );
+        this.listGroups.set(context.groupId, list);
+        await this.announceList(context.groupId, list);
+        return this.formatList(context, list);
+      } catch (error) {
+        return this.friendlyError(error);
+      }
     }
 
     this.setups.set(context.groupId, {
@@ -141,6 +210,102 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       '',
       'Qual é o *nome do produto*?',
     ].join('\n');
+  }
+
+  private async findPendingEventForGroup(context: WhatsAppGroupContext): Promise<{
+    eventId: string;
+    internalGroupId: string;
+  } | null> {
+    const group = await this.prisma.group.findFirst({
+      where: { tenantId: context.tenantId, whatsappGroupId: context.groupId, isActive: true },
+    });
+    if (!group) return null;
+
+    const event = await this.prisma.auctionEvent.findFirst({
+      where: {
+        tenantId: context.tenantId,
+        groupId: group.id,
+        status: AuctionEventStatus.OPEN,
+      },
+    });
+    if (!event) return null;
+
+    const hasOpen = await this.prisma.auction.findFirst({
+      where: { tenantId: context.tenantId, auctionEventId: event.id, status: AuctionStatus.OPEN },
+      select: { id: true },
+    });
+    if (hasOpen) return null;
+
+    return { eventId: event.id, internalGroupId: group.id };
+  }
+
+  /**
+   * Cria um leilão aberto por item do evento e devolve o estado da lista.
+   */
+  private async startListInGroup(
+    tenantId: string,
+    internalGroupId: string,
+    eventId: string,
+  ): Promise<ActiveListMemory> {
+    const group = await this.prisma.group.findFirst({
+      where: { id: internalGroupId, tenantId, isActive: true },
+    });
+    if (!group || !group.whatsappGroupId) {
+      throw new Error('Grupo não vinculado ao WhatsApp.');
+    }
+    const event = await this.prisma.auctionEvent.findFirst({
+      where: { id: eventId, tenantId, status: AuctionEventStatus.OPEN },
+    });
+    if (!event) {
+      throw new Error('Leilão de lista não encontrado ou já encerrado.');
+    }
+
+    const items = await this.prisma.item.findMany({
+      where: { tenantId, auctionEventId: eventId },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+    });
+    if (items.length === 0) {
+      throw new Error('Cadastre itens neste leilão antes de iniciar.');
+    }
+
+    const open = await this.prisma.auction.findFirst({
+      where: { tenantId, groupId: group.id, status: AuctionStatus.OPEN },
+      select: { id: true },
+    });
+    if (open) {
+      throw new Error('Já existe um leilão ativo neste grupo.');
+    }
+
+    for (const item of items) {
+      await this.prisma.auction.create({
+        data: {
+          tenantId,
+          groupId: group.id,
+          itemId: item.id,
+          auctionEventId: event.id,
+          productName: item.name,
+          initialValue: item.initialValue,
+          durationSeconds: item.durationSeconds,
+          status: AuctionStatus.OPEN,
+          startedAt: new Date(),
+          endsAt: new Date(Date.now() + item.durationSeconds * 1000),
+        },
+      });
+      await this.prisma.item.update({
+        where: { id: item.id },
+        data: { status: ItemStatus.ON_AUCTION },
+      });
+    }
+
+    return {
+      tenantId,
+      groupId: group.whatsappGroupId,
+      internalGroupId: group.id,
+      eventId: event.id,
+      eventName: event.name,
+      periodicStatusMinutes: event.periodicStatusMinutes ?? 0,
+      lastStatusAt: Date.now(),
+    };
   }
 
   /**
@@ -202,6 +367,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   async getStatus(context: WhatsAppGroupContext): Promise<string> {
+    const list = this.listGroups.get(context.groupId);
+    if (list) {
+      return this.formatList(context, list);
+    }
+
     const active = this.active.get(context.groupId);
     if (!active) {
       return 'ℹ️ Não há leilão em andamento neste grupo.\nUse *!iniciar* para começar.';
@@ -230,6 +400,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return '⛔ Apenas *administradores do grupo* podem encerrar o leilão.';
     }
 
+    const list = this.listGroups.get(context.groupId);
+    if (list) {
+      const text = await this.listToText(list);
+      await this.emit(list.tenantId, list.groupId, text);
+      await this.closeEventGroups(list.tenantId, list.eventId);
+      this.listGroups.delete(context.groupId);
+      return '🚫 *LISTA ENCERRADA* por um administrador.';
+    }
+
     const active = this.active.get(context.groupId);
     if (!active) {
       return 'ℹ️ Não há leilão em andamento neste grupo.';
@@ -244,6 +423,81 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       `📦 Produto: *${active.productName}*`,
       'O leilão foi cancelado por um administrador.',
     ].join('\n');
+  }
+
+  /**
+   * Fecha todos os leilões abertos de um evento e marca o evento como encerrado.
+   */
+  async closeEventGroups(tenantId: string, eventId: string): Promise<{ closedCount: number }> {
+    const open = await this.prisma.auction.findMany({
+      where: { tenantId, auctionEventId: eventId, status: AuctionStatus.OPEN },
+      select: { id: true },
+    });
+    for (const auction of open) {
+      await this.auctionsService.closeAuction(auction.id, tenantId, 'manual');
+    }
+    await this.prisma.auctionEvent.updateMany({
+      where: { id: eventId, tenantId },
+      data: { status: AuctionEventStatus.CLOSED },
+    });
+    const targets = Array.from(this.listGroups.values()).filter(
+      (list) => list.eventId === eventId && list.tenantId === tenantId,
+    );
+    for (const list of targets) {
+      const text = await this.listToText(list).catch(() => null);
+      this.listGroups.delete(list.groupId);
+      if (text) {
+        await this.emit(list.tenantId, list.groupId, `🔚 *LISTA ENCERRADA*\n\n${text}`);
+      }
+    }
+    return { closedCount: open.length };
+  }
+
+  /**
+   * Abre a lista de um evento em um grupo a partir do painel.
+   */
+  async openListFromPanel(
+    tenantId: string,
+    eventId: string,
+    internalGroupId: string,
+  ): Promise<{ itemCount: number }> {
+    const list = await this.startListInGroup(tenantId, internalGroupId, eventId);
+    this.listGroups.set(list.groupId, list);
+    const text = await this.listToText(list);
+    await this.emit(list.tenantId, list.groupId, text);
+    return { itemCount: (await this.listAuctionSnapshot(list)).length };
+  }
+
+  /**
+   * Encerra um item específico da lista a partir do painel.
+   */
+  async closeListItemFromPanel(
+    tenantId: string,
+    eventId: string,
+    auctionId: string,
+  ): Promise<{ itemName: string }> {
+    const auction = await this.prisma.auction.findFirst({
+      where: { id: auctionId, tenantId, auctionEventId: eventId },
+      select: { productName: true },
+    });
+    if (!auction) {
+      throw new Error('Auctione do item não encontrado.');
+    }
+    await this.auctionsService.closeAuction(auctionId, tenantId, 'manual');
+    await this.emitListStatus(tenantId, eventId);
+    return { itemName: auction.productName };
+  }
+
+  /**
+   * Reenvia o status atual da lista para os grupos onde está ativa.
+   */
+  private async emitListStatus(tenantId: string, eventId: string): Promise<void> {
+    for (const list of this.listGroups.values()) {
+      if (list.tenantId === tenantId && list.eventId === eventId) {
+        const text = await this.listToText(list);
+        await this.emit(list.tenantId, list.groupId, text);
+      }
+    }
   }
 
   async getHistory(context: WhatsAppGroupContext): Promise<string> {
@@ -344,6 +598,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       '💰 Para dar um lance, basta enviar o *valor* no chat.',
       'Ex.: 100, 150, R$ 300, 1.500,00',
       'Todo lance reinicia o cronômetro.',
+      '',
+      '📋 Em um *leilão de lista* o lance é: *Nº - VALOR* (ex.: *01 - 22,00*).',
+      'O administrador encerra cada item pelo painel.',
     ].join('\n');
   }
 
@@ -352,6 +609,12 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   // -------------------------------------------------------------------------
 
   async handleChatInput(context: WhatsAppGroupContext, text: string): Promise<void> {
+    const list = this.listGroups.get(context.groupId);
+    if (list) {
+      await this.handleListBid(context, list, text);
+      return;
+    }
+
     const setup = this.setups.get(context.groupId);
     if (setup) {
       await this.advanceSetup(context, setup, text);
@@ -361,6 +624,64 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     const amount = parseAmount(text);
     if (amount !== null && amount > 0) {
       await this.placeBid(context, amount);
+    }
+  }
+
+  /**
+   * Processa lances no modo lista, no formato `NN - VALOR` (ex.: `01 - 22,00`).
+   */
+  private async handleListBid(
+    context: WhatsAppGroupContext,
+    list: ActiveListMemory,
+    text: string,
+  ): Promise<void> {
+    const match = /^\s*(\d+)\s*[-–—]\s*(.+)$/.exec(text);
+    if (!match) {
+      await this.reply(context, 'ℹ️ Para dar um lance envie no formato: *01 - 22,00* (número do item e valor).');
+      return;
+    }
+
+    const itemNumber = parseInt(match[1], 10);
+    const amount = parseAmount(match[2]);
+    if (itemNumber <= 0 || amount === null || amount <= 0) {
+      await this.reply(context, '❌ Valor inválido. Use o formato: *01 - 22,00*');
+      return;
+    }
+
+    try {
+      const snapshot = await this.listAuctionSnapshot(list);
+      const entry = snapshot.find((e) => e.number === itemNumber);
+      if (!entry) {
+        await this.reply(context, `ℹ️ Item *${itemNumber}* não encontrado na lista.`);
+        return;
+      }
+      if (entry.status !== AuctionStatus.OPEN) {
+        await this.reply(context, `ℹ️ O item *${entry.name}* já foi encerrado.`);
+        return;
+      }
+
+      const { auction } = await this.auctionsService.placeBid(list.tenantId, {
+        auctionId: entry.auctionId,
+        amount,
+        participantPhone: context.senderId.split('@')[0],
+        participantName: context.senderName ?? undefined,
+      });
+
+      await this.reply(
+        context,
+        [
+          '✅ *LANCE REGISTRADO!*',
+          `🔢 Item Nº *${itemNumber}* — *${entry.name}*`,
+          `💵 Valor: *${formatCurrency(amount)}*`,
+          `👤 Líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
+          `⏱️ Item reiniciado: *${auction.durationSeconds}s*`,
+        ].join('\n'),
+      );
+
+      list.lastStatusAt = Date.now();
+      this.listGroups.set(context.groupId, list);
+    } catch (error) {
+      await this.reply(context, this.friendlyError(error));
     }
   }
 
@@ -488,8 +809,134 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   // -------------------------------------------------------------------------
-  // Ticker de contagem regressiva
+  // Modo lista (leilão de múltiplos itens simultâneos)
   // -------------------------------------------------------------------------
+
+  /**
+   * Monta o snapshot atual dos itens de uma lista (usado no status e nos lances).
+   */
+  private async listAuctionSnapshot(list: ActiveListMemory): Promise<ListAuctionEntry[]> {
+    const auctions = await this.prisma.auction.findMany({
+      where: {
+        tenantId: list.tenantId,
+        auctionEventId: list.eventId,
+        itemId: { not: null },
+      },
+      select: {
+        id: true,
+        productName: true,
+        status: true,
+        initialValue: true,
+        item: {
+          select: { order: true, initialValue: true },
+        },
+        bids: {
+          where: { isCurrentLeader: true },
+          orderBy: { amount: 'desc' },
+          take: 1,
+          select: {
+            amount: true,
+            participantName: true,
+            participantPhone: true,
+          },
+        },
+        _count: {
+          select: { bids: true },
+        },
+      },
+    });
+
+    const ordered = [...auctions].sort((a, b) => {
+      const oa = a.item?.order ?? 0;
+      const ob = b.item?.order ?? 0;
+      return oa - ob;
+    });
+
+    return ordered.map((auction, index) => {
+      const leader = auction.bids[0];
+      return {
+        number: index + 1,
+        auctionId: auction.id,
+        name: auction.productName,
+        status: auction.status,
+        initialValue: auction.initialValue,
+        currentAmount: leader?.amount ?? auction.item?.initialValue ?? auction.initialValue,
+        leader: leader?.participantName ?? leader?.participantPhone ?? null,
+        bidCount: auction._count.bids,
+      };
+    });
+  }
+
+  private async formatList(context: WhatsAppGroupContext, list: ActiveListMemory): Promise<string> {
+    try {
+      return await this.listToText(list);
+    } catch (error) {
+      this.logger.error(`Falha ao gerar status da lista: ${(error as Error).message}`);
+      return '❌ Não foi possível gerar o status da lista.';
+    }
+  }
+
+  private listToText(list: ActiveListMemory): Promise<string> {
+    return this.listAuctionSnapshot(list).then(
+      (rows) => this.renderList(list, rows),
+      () => '❌ Não foi possível gerar o status da lista.',
+    );
+  }
+
+  private renderList(list: ActiveListMemory, rows: ListAuctionEntry[]): string {
+    const header = `🏷️ *${list.eventName || 'LEILÃO'}*`;
+    const title = 'Nº - ITEM - VALOR - LÍDER';
+    const body = rows.map((row) => {
+      const value = formatCurrency(row.currentAmount);
+      const leader = row.leader ?? '—';
+      return `${String(row.number).padStart(2, '0')} - ${row.name} - ${value} - ${leader}`;
+    });
+    return [header, '```', title, ...body, '```'].join('\n');
+  }
+
+  private async announceList(groupId: string, list: ActiveListMemory): Promise<void> {
+    const text = await this.listToText(list);
+    await this.emit(list.tenantId, groupId, text);
+  }
+
+  /**
+   * Alterna o status periódico da lista e sinaliza que precisa de novo envio.
+   */
+  private async tickListStatus(): Promise<void> {
+    const now = Date.now();
+    for (const [whatsappGroupId, list] of this.listGroups) {
+      // Envia periodicamente quando configurado.
+      if (list.periodicStatusMinutes && list.periodicStatusMinutes > 0) {
+        const periodMs = list.periodicStatusMinutes * 60 * 1000;
+        const last = list.lastStatusAt ? list.lastStatusAt : now;
+        if (now - last >= periodMs) {
+          list.lastStatusAt = now;
+          this.listGroups.set(whatsappGroupId, list);
+          const text = await this.listToText(list);
+          await this.emit(list.tenantId, list.groupId, text);
+        }
+      }
+
+      // Encerra itens da lista expirados.
+      const expired = await this.prisma.auction.findMany({
+        where: {
+          tenantId: list.tenantId,
+          auctionEventId: list.eventId,
+          status: AuctionStatus.OPEN,
+          endsAt: { lte: new Date() },
+        },
+        select: { id: true },
+      });
+      for (const auction of expired) {
+        await this.auctionsService.closeAuction(auction.id, list.tenantId);
+      }
+      if (expired.length > 0) {
+        this.listGroups.set(whatsappGroupId, list);
+        const text = await this.listToText(list);
+        await this.emit(list.tenantId, list.groupId, text);
+      }
+    }
+  }
 
   private async tick(): Promise<void> {
     for (const [groupId, auction] of this.active) {

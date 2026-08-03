@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 
 export class CreateAuctionEventDto {
   @IsString()
@@ -9,6 +9,16 @@ export class CreateAuctionEventDto {
   @IsString()
   @MaxLength(1000, { message: 'A descrição deve ter no máximo 1000 caracteres.' })
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+
+  @IsOptional()
+  @IsInt({ message: 'O intervalo do status deve ser um número inteiro de minutos.' })
+  @Min(0, { message: 'O intervalo mínimo é 0 (somente sob demanda).' })
+  @Max(1440, { message: 'O intervalo máximo é 1440 minutos.' })
+  periodicStatusMinutes?: number;
 }
 
 export class UpdateAuctionEventDto {
@@ -21,4 +31,14 @@ export class UpdateAuctionEventDto {
   @IsString()
   @MaxLength(1000, { message: 'A descrição deve ter no máximo 1000 caracteres.' })
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  groupId?: string;
+
+  @IsOptional()
+  @IsInt({ message: 'O intervalo do status deve ser um número inteiro de minutos.' })
+  @Min(0, { message: 'O intervalo mínimo é 0 (somente sob demanda).' })
+  @Max(1440, { message: 'O intervalo máximo é 24 horas.' })
+  periodicStatusMinutes?: number;
 }
