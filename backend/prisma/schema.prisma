@@ -1,0 +1,388 @@
+// ==========================================================================
+// BotLeilão — Schema Prisma (PostgreSQL)
+// Modelos multi-tenant: todo dado de negócio referencia um Tenant.
+// ==========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN // Operador da plataforma SaaS
+  ADMIN       // Administrador do tenant
+  USER        // Usuário comum do tenant
+}
+
+enum AuctionStatus {
+  OPEN      // Leilão em andamento
+  CLOSED    // Encerrado normalmente
+  CANCELLED // Encerrado manualmente (!encerrar)
+}
+
+enum ItemStatus {
+  AVAILABLE // Disponível para leilão
+  ON_AUCTION // Em leilão no momento (leilão aberto vinculado)
+  SOLD      // Vendido (leilão encerrado com vencedor)
+}
+
+enum AuctionEventStatus {
+  OPEN   // Leilão (evento) aberto — aceita novos itens
+  CLOSED // Encerrado — itens não podem mais ser adicionados/leiloados
+}
+
+enum PlanStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  CANCELED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  PIX
+  CARD
+  BOLETO
+  MANUAL
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  AUCTION_START
+  AUCTION_CLOSE
+  AUCTION_CANCEL
+  BID
+  GROUP_ADD
+  GROUP_REMOVE
+}
+
+enum SessionStatus {
+  DISCONNECTED // Aguardando QR Code
+  CONNECTING
+  CONNECTED
+  ERROR
+}
+
+// ---------------------------------------------------------------------------
+// Identidade / Assinatura
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  email       String   @unique
+  cnpj        String?
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users         User[]
+  groups        Group[]
+  auctions      Auction[]
+  items         Item[]
+  auctionEvents AuctionEvent[]
+  bids          Bid[]
+  subscriptions Subscription[]
+  payments      Payment[]
+  logs          Log[]
+  audits        Audit[]
+  notifications Notification[]
+  sessions      WhatsAppSession[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  name         String
+  email        String   @unique
+  password     String
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+  audits        Audit[]
+
+  @@index([tenantId])
+  @@index([email])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Planos / Assinaturas / Pagamentos
+// ---------------------------------------------------------------------------
+
+model Plan {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  price       Decimal    @db.Decimal(10, 2)
+  maxGroups   Int
+  maxAuctions Int? // null = ilimitado
+  maxUsers    Int        @default(1)
+  features    String[] // ex.: ["whatsapp", "relatorios"]
+  status      PlanStatus @default(ACTIVE)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  tenantId         String
+  planId           String
+  status           SubscriptionStatus @default(TRIAL)
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  canceledAt       DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan     Plan   @relation(fields: [planId], references: [id])
+  payments Payment[]
+
+  @@unique([tenantId, planId])
+  @@index([tenantId])
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  tenantId      String
+  subscriptionId String?
+  amount        Decimal       @db.Decimal(10, 2)
+  method        PaymentMethod
+  status        PaymentStatus @default(PENDING)
+  externalId    String? // referência ao gateway (ex.: Stripe/Asaas)
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Negócio: Itens cadastrados, Grupos, Leilões, Lances
+// ---------------------------------------------------------------------------
+
+model Item {
+  id              String     @id @default(cuid())
+  tenantId        String
+  auctionEventId  String?
+  name            String
+  description     String?
+  imageUrl        String?
+  initialValue    Decimal    @db.Decimal(12, 2)
+  durationSeconds Int        @default(120)
+  status          ItemStatus @default(AVAILABLE)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  auctionEvent AuctionEvent?  @relation(fields: [auctionEventId], references: [id], onDelete: Cascade)
+  auctions     Auction[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([auctionEventId])
+}
+
+model Group {
+  id            String   @id @default(cuid())
+  tenantId      String
+  whatsappGroupId String @unique // id do grupo no WhatsApp (estado bruto, ex.: g.us)
+  name          String
+  description   String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  auctions Auction[]
+
+  @@index([tenantId])
+}
+
+model Auction {
+  id            String        @id @default(cuid())
+  tenantId      String
+  groupId       String
+  itemId        String?
+  auctionEventId String?
+  productName   String
+  initialValue  Decimal       @db.Decimal(12, 2)
+  durationSeconds Int
+  status        AuctionStatus @default(OPEN)
+  startedAt     DateTime      @default(now())
+  endsAt        DateTime?     // próximo deadline (lastBidAt + duration)
+  closedAt      DateTime?
+  winnerBidId   String?  @unique
+  paymentStatus PaymentStatus @default(PENDING)
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group         Group         @relation(fields: [groupId], references: [id])
+  item          Item?         @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  auctionEvent  AuctionEvent? @relation(fields: [auctionEventId], references: [id], onDelete: SetNull)
+  bids          Bid[]
+  winnerBid     Bid?          @relation("WinnerBid", fields: [winnerBidId], references: [id])
+
+  @@index([groupId, status]) // índice para consultas por grupo
+  @@index([tenantId])
+  @@index([status])
+  @@index([itemId])
+  @@index([auctionEventId])
+}
+
+model AuctionEvent {
+  id          String             @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  status      AuctionEventStatus @default(OPEN)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  tenant  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items   Item[]
+  auctions Auction[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+
+model Bid {
+  id            String   @id @default(cuid())
+  auctionId     String
+  tenantId      String
+  amount        Decimal  @db.Decimal(12, 2)
+  participantName String?
+  participantPhone String @db.VarChar(32)
+  isCurrentLeader Boolean @default(false)
+  createdAt     DateTime @default(now())
+
+  auction Auction @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  wonAuction Auction? @relation("WinnerBid")
+
+  @@index([auctionId, amount])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Observabilidade / Auditoria / Notificações
+// ---------------------------------------------------------------------------
+
+model Log {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  level     LogLevel @default(INFO)
+  message   String
+  context   String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([level, createdAt])
+}
+
+model Audit {
+  id        String        @id @default(cuid())
+  tenantId  String?
+  userId    String?
+  action    AuditAction
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  createdAt DateTime      @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  tenantId  String
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, readAt])
+}
+
+// ---------------------------------------------------------------------------
+// Sessões do WhatsApp (multi-tenant bot)
+// ---------------------------------------------------------------------------
+
+model WhatsAppSession {
+  id            String        @id @default(cuid())
+  tenantId      String
+  clientId      String        @unique // identifica o cliente (ex.: "tenant-<id>")
+  status        SessionStatus @default(DISCONNECTED)
+  phone         String?
+  lastQrAt      DateTime?
+  lastConnectedAt DateTime?
+  lastError     String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}

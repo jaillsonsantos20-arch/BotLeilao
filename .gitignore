@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.production
+.env.*.local
+
+# WhatsApp sessions
+.wwebjs_auth/
+.wwebjs_cache/
+sessions/
+*.session
+
+# Uploads (runtime)
+backend/uploads/
+uploads/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Test / coverage
+coverage/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Prisma
+*.db
