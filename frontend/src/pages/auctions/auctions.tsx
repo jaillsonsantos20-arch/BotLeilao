@@ -194,10 +194,6 @@ export function AuctionsPage() {
   const [itemImageUrl, setItemImageUrl] = useState<string | null>(null);
   const [itemFormError, setItemFormError] = useState<string | null>(null);
 
-  const [auctionTarget, setAuctionTarget] = useState<Item | null>(null);
-  const [auctionGroupId, setAuctionGroupId] = useState('');
-  const [auctionError, setAuctionError] = useState<string | null>(null);
-
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
 
@@ -353,22 +349,6 @@ export function AuctionsPage() {
       setEventError(extractError(err, 'Falha ao atualizar o status de pagamento.')),
   });
 
-  const startAuction = useMutation({
-    mutationFn: async (params: { item: Item; groupId: string }) => {
-      const response = await api.post<ApiEnvelope<Auction>>(`/items/${params.item.id}/auction`, {
-        groupId: params.groupId,
-      });
-      return response.data.data;
-    },
-    onSuccess: () => {
-      invalidate();
-      setAuctionTarget(null);
-      setAuctionGroupId('');
-      setAuctionError(null);
-    },
-    onError: (err) => setAuctionError(extractError(err, 'Falha ao iniciar o leilão no WhatsApp.')),
-  });
-
   function handleCreateEvent(event: FormEvent): void {
     event.preventDefault();
     createEvent.mutate();
@@ -396,16 +376,6 @@ export function AuctionsPage() {
     uploadImage.mutate(file, {
       onSuccess: (url) => setItemImageUrl(url),
     });
-  }
-
-  function handleStartAuction(event: FormEvent): void {
-    event.preventDefault();
-    if (!auctionTarget) return;
-    if (!auctionGroupId) {
-      setAuctionError('Selecione um grupo para o leilão.');
-      return;
-    }
-    startAuction.mutate({ item: auctionTarget, groupId: auctionGroupId });
   }
 
   const canLeilao = groups.data && groups.data.length > 0;
@@ -1021,49 +991,36 @@ export function AuctionsPage() {
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-2">
-                                {item.status === 'ON_AUCTION' &&
-                                  selectedEvent.status === 'OPEN' &&
-                                  openAuctionByItem.get(item.id) && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      disabled={closeListItem.isPending}
-                                      onClick={() => {
-                                        const auction = openAuctionByItem.get(item.id);
-                                        if (
-                                          auction &&
-                                          window.confirm(
-                                            `Encerrar o item "${item.name}" e fixar o vencedor?`,
-                                          )
-                                        ) {
-                                          closeListItem.mutate({
-                                            eventId: selectedEventId!,
-                                            auctionId: auction.id,
-                                          });
-                                        }
-                                      }}
-                                      title="Encerra apenas este item da lista"
-                                    >
-                                      <CircleStop className="size-4" />
-                                      Encerrar item
-                                    </Button>
-                                  )}
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   disabled={
-                                    item.status === 'ON_AUCTION' ||
+                                    !openAuctionByItem.get(item.id) ||
                                     selectedEvent.status === 'CLOSED' ||
-                                    !canLeilao
+                                    closeListItem.isPending
                                   }
                                   onClick={() => {
-                                    setAuctionTarget(item);
-                                    setAuctionGroupId(groups.data?.[0]?.id ?? '');
-                                    setAuctionError(null);
+                                    const auction = openAuctionByItem.get(item.id);
+                                    if (
+                                      auction &&
+                                      window.confirm(
+                                        `Encerrar o item "${item.name}" e fixar o vencedor?`,
+                                      )
+                                    ) {
+                                      closeListItem.mutate({
+                                        eventId: selectedEventId!,
+                                        auctionId: auction.id,
+                                      });
+                                    }
                                   }}
+                                  title={
+                                    openAuctionByItem.get(item.id)
+                                      ? 'Encerra apenas este item da lista'
+                                      : 'Este item ainda não está em leilão'
+                                  }
                                 >
-                                  <Gavel className="size-4" />
-                                  Leiloar item
+                                  <CircleStop className="size-4" />
+                                  Encerrar
                                 </Button>
                                 <Button
                                   size="icon"
@@ -1095,72 +1052,6 @@ export function AuctionsPage() {
                 </div>
               )}
             </div>
-
-            {auctionTarget && (
-              <div className="rounded-md border p-4">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <div className="text-sm">
-                    Iniciar <strong>{auctionTarget.name}</strong> ({formatCurrency(auctionTarget.initialValue)}) no grupo:
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={() => setAuctionTarget(null)}>
-                    <X className="size-4" />
-                  </Button>
-                </div>
-                {!canLeilao ? (
-                  <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                    Nenhum grupo vinculado. Vá em Grupos e vincule um grupo do WhatsApp
-                    (use "Vincular por código") antes de leiloar.
-                  </p>
-                ) : (
-                  <form
-                    onSubmit={handleStartAuction}
-                    className="grid gap-4 sm:grid-cols-[1fr_auto_auto] sm:items-end"
-                  >
-                    <div className="space-y-2">
-                      <Label htmlFor="auction-group">Grupo do WhatsApp</Label>
-                      <select
-                        id="auction-group"
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        value={auctionGroupId}
-                        onChange={(event) => setAuctionGroupId(event.target.value)}
-                        required
-                      >
-                        <option value="" disabled>
-                          Selecione um grupo
-                        </option>
-                        {groups.data?.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name}
-                            {group.openAuction ? ' (com leilão ativo)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {groups.data?.some((group) => group.openAuction) && (
-                        <p className="text-xs text-muted-foreground">
-                          Grupos com leilão ativo não podem iniciar outro.
-                        </p>
-                      )}
-                    </div>
-                    <Button
-                      type="submit"
-                      disabled={
-                        startAuction.isPending ||
-                        (!!auctionGroupId &&
-                          !groups.data?.some((g) => g.id === auctionGroupId && !g.openAuction))
-                      }
-                    >
-                      {startAuction.isPending ? <Loader2 className="animate-spin" /> : <Gavel className="size-4" />}
-                      Confirmar e leiloar
-                    </Button>
-                  </form>
-                )}
-                {auctionError && (
-                  <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                    {auctionError}
-                  </p>
-                )}
-              </div>
-            )}
           </CardContent>
         </Card>
       )}

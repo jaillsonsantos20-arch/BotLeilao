@@ -444,10 +444,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       (list) => list.eventId === eventId && list.tenantId === tenantId,
     );
     for (const list of targets) {
-      const text = await this.listToText(list).catch(() => null);
+      const text = await this.listFinalText(list).catch(() => null);
       this.listGroups.delete(list.groupId);
       if (text) {
-        await this.emit(list.tenantId, list.groupId, `🔚 *LISTA ENCERRADA*\n\n${text}`);
+        await this.emit(list.tenantId, list.groupId, text);
       }
     }
     return { closedCount: open.length };
@@ -484,20 +484,23 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       throw new Error('Auctione do item não encontrado.');
     }
     await this.auctionsService.closeAuction(auctionId, tenantId, 'manual');
-    await this.emitListStatus(tenantId, eventId);
     return { itemName: auction.productName };
   }
 
   /**
-   * Reenvia o status atual da lista para os grupos onde está ativa.
+   * Gera o resumo final da lista (após o encerramento): todos os itens,
+   * respectivos valores finais e vencedores.
    */
-  private async emitListStatus(tenantId: string, eventId: string): Promise<void> {
-    for (const list of this.listGroups.values()) {
-      if (list.tenantId === tenantId && list.eventId === eventId) {
-        const text = await this.listToText(list);
-        await this.emit(list.tenantId, list.groupId, text);
-      }
-    }
+  private async listFinalText(list: ActiveListMemory): Promise<string> {
+    const rows = await this.listAuctionSnapshot(list);
+    const header = `🏁 *LEILÃO FINALIZADO*\n🏷️ *${list.eventName || 'LEILÃO'}*`;
+    const title = 'Nº - ITEM - VALOR - VENCEDOR';
+    const body = rows.map((row) => {
+      const value = formatCurrency(row.currentAmount);
+      const winner = row.leader ?? 'Sem lance';
+      return `${String(row.number).padStart(2, '0')} - ${row.name} - ${value} - ${winner}`;
+    });
+    return [header, '```', title, ...body, '```'].join('\n');
   }
 
   async getHistory(context: WhatsAppGroupContext): Promise<string> {
