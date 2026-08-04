@@ -68,6 +68,7 @@ const AUCTION_STATUS: Record<AuctionStatus, { label: string; variant: 'success' 
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_ITEM_DURATION_SECONDS = 120;
 
 function useEvents() {
   return useQuery({
@@ -190,7 +191,6 @@ export function AuctionsPage() {
   const [itemName, setItemName] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [itemValue, setItemValue] = useState('');
-  const [itemDuration, setItemDuration] = useState('120');
   const [itemImageUrl, setItemImageUrl] = useState<string | null>(null);
   const [itemFormError, setItemFormError] = useState<string | null>(null);
 
@@ -303,7 +303,7 @@ export function AuctionsPage() {
         description: itemDescription || undefined,
         imageUrl: itemImageUrl ?? undefined,
         initialValue: parseFloat(itemValue),
-        durationSeconds: parseInt(itemDuration, 10),
+        durationSeconds: DEFAULT_ITEM_DURATION_SECONDS,
       });
       return response.data.data;
     },
@@ -312,7 +312,6 @@ export function AuctionsPage() {
       setItemName('');
       setItemDescription('');
       setItemValue('');
-      setItemDuration('120');
       setItemImageUrl(null);
       setItemFormError(null);
     },
@@ -913,18 +912,6 @@ export function AuctionsPage() {
                     value={itemValue}
                     onChange={(event) => setItemValue(event.target.value)}
                     placeholder="100"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="item-duration">Tempo do leilão (segundos)</Label>
-                  <Input
-                    id="item-duration"
-                    type="number"
-                    min="10"
-                    step="1"
-                    value={itemDuration}
-                    onChange={(event) => setItemDuration(event.target.value)}
                     required
                   />
                 </div>
