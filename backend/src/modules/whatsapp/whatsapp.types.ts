@@ -31,6 +31,7 @@ export interface ActiveAuctionMemory {
   tenantId: string;
   groupId: string;
   productName: string;
+  itemId: string | null;
   endsAt: Date;
   warnedFirst: boolean;
   warnedSecond: boolean;
@@ -62,4 +63,5 @@ export interface ListAuctionEntry {
   currentAmount: any;
   leader: string | null;
   bidCount: number;
+  imageUrl: string | null;
 }

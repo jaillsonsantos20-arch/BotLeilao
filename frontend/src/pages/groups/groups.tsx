@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { PageHeader } from '@/components/layout/page-header';
 
 function useGroups() {
   return useQuery({
@@ -84,28 +85,26 @@ export function GroupsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Grupos</h2>
-          <p className="text-sm text-muted-foreground">
-            Vincule grupos do WhatsApp para iniciar leilões.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => generateLinkCode.mutate()}>
-            {generateLinkCode.isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
+      <PageHeader
+        title="Grupos"
+        description="Vincule grupos do WhatsApp para iniciar leilões."
+        actions={
+          <>
+            <Button variant="outline" onClick={() => generateLinkCode.mutate()}>
+              {generateLinkCode.isPending ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Vincular por código
+            </Button>
+            <Button onClick={() => setCreating((prev) => !prev)}>
               <Plus className="size-4" />
-            )}
-            Vincular por código
-          </Button>
-          <Button onClick={() => setCreating((prev) => !prev)}>
-            <Plus className="size-4" />
-            Novo grupo
-          </Button>
-        </div>
-      </div>
+              Novo grupo
+            </Button>
+          </>
+        }
+      />
 
       {linkCode && (
         <Card className="border-emerald-600/40 bg-emerald-500/5">

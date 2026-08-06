@@ -109,6 +109,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         tenantId: true,
         groupId: true,
         productName: true,
+        itemId: true,
         endsAt: true,
         group: { select: { whatsappGroupId: true } },
       },
@@ -124,6 +125,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         tenantId: auction.tenantId,
         groupId: whatsappGroupId,
         productName: auction.productName,
+        itemId: auction.itemId,
         endsAt: auction.endsAt,
         warnedFirst: remainingSeconds <= WHATSAPP_WARNING_FIRST_SECONDS,
         warnedSecond: remainingSeconds <= WHATSAPP_WARNING_SECOND_SECONDS,
@@ -329,6 +331,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       tenantId: input.tenantId,
       groupId: input.whatsappGroupId,
       productName: input.auction.productName,
+      itemId: input.auction.itemId,
       endsAt: input.auction.endsAt,
       warnedFirst: false,
       warnedSecond: false,
@@ -602,7 +605,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       'Ex.: 100, 150, R$ 300, 1.500,00',
       'Todo lance reinicia o cronômetro.',
       '',
-      '📋 Em um *leilão de lista* o lance é: *Nº - VALOR* (ex.: *01 - 22,00*).',
+      '📋 Em um *leilão de lista* o lance é: *Nº VALOR* (ex.: *01 22,00*).',
       'O administrador encerra cada item pelo painel.',
     ].join('\n');
   }
@@ -631,23 +634,30 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Processa lances no modo lista, no formato `NN - VALOR` (ex.: `01 - 22,00`).
+   * Processa lances no modo lista, no formato `Nº VALOR` (ex.: `01 22,00`).
+   * Aceita também separadores `-`, `–`, `—` e espaço (`01-22`, `01 - 22`).
    */
   private async handleListBid(
     context: WhatsAppGroupContext,
     list: ActiveListMemory,
     text: string,
   ): Promise<void> {
-    const match = /^\s*(\d+)\s*[-–—]\s*(.+)$/.exec(text);
+    const match = /^\s*(\d+)\s*(?:[-–—]|\s+)\s*(.+)$/.exec(text);
     if (!match) {
-      await this.reply(context, 'ℹ️ Para dar um lance envie no formato: *01 - 22,00* (número do item e valor).');
+      const looksLikeAmount = parseAmount(text) !== null;
+      await this.reply(
+        context,
+        looksLikeAmount
+          ? 'ℹ️ Aqui é um leilão de *lista*: o lance precisa do *Nº do item*.\nEnvie o formato: *01 300* (Nº do item + valor).'
+          : 'ℹ️ Formato de lance não reconhecido.\nEnvie: *01 300* (Nº do item + valor).',
+      );
       return;
     }
 
     const itemNumber = parseInt(match[1], 10);
     const amount = parseAmount(match[2]);
     if (itemNumber <= 0 || amount === null || amount <= 0) {
-      await this.reply(context, '❌ Valor inválido. Use o formato: *01 - 22,00*');
+      await this.reply(context, '❌ Valor inválido. Use o formato: *01 300* (Nº do item + valor).');
       return;
     }
 
@@ -659,7 +669,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (entry.status !== AuctionStatus.OPEN) {
-        await this.reply(context, `ℹ️ O item *${entry.name}* já foi encerrado.`);
+        await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
         return;
       }
 
@@ -670,7 +680,18 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         participantName: context.senderName ?? undefined,
       });
 
-      await this.reply(context, '✅ *Lance Registrado*');
+      const confirmation = [
+        '✅ *LANCE REGISTRADO!*',
+        `🆔 Item *${String(entry.number).padStart(2, '0')}*: *${entry.name}*`,
+        `💰 Valor: *${formatCurrency(amount)}*`,
+        `👤 Novo líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
+      ].join('\n');
+      await this.emit(
+        list.tenantId,
+        list.groupId,
+        confirmation,
+        imageUrlToLocalPath(entry.imageUrl),
+      );
 
       list.lastStatusAt = Date.now();
       this.listGroups.set(context.groupId, list);
@@ -742,6 +763,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
             tenantId: setup.tenantId,
             groupId: context.groupId,
             productName: auction.productName,
+            itemId: auction.itemId,
             endsAt: auction.endsAt!,
             warnedFirst: false,
             warnedSecond: false,
@@ -788,14 +810,17 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       active.warnedSecond = false;
       this.active.set(context.groupId, active);
 
-      await this.reply(
-        context,
+      const mediaPath = await this.resolveItemMediaPath(active.itemId);
+      await this.emit(
+        context.tenantId,
+        context.groupId,
         [
           '✅ *LANCE REGISTRADO!*',
           `💵 Valor: *${formatCurrency(amount)}*`,
           `👤 Líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
           `⏱️ Leilão reiniciado: *${auction.durationSeconds}s*`,
         ].join('\n'),
+        mediaPath,
       );
     } catch (error) {
       await this.reply(context, this.friendlyError(error));
@@ -822,7 +847,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         status: true,
         initialValue: true,
         item: {
-          select: { order: true, initialValue: true },
+          select: { order: true, initialValue: true, imageUrl: true },
         },
         bids: {
           where: { isCurrentLeader: true },
@@ -857,6 +882,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         currentAmount: leader?.amount ?? auction.item?.initialValue ?? auction.initialValue,
         leader: leader?.participantName ?? leader?.participantPhone ?? null,
         bidCount: auction._count.bids,
+        imageUrl: auction.item?.imageUrl ?? null,
       };
     });
   }
@@ -878,14 +904,40 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   private renderList(list: ActiveListMemory, rows: ListAuctionEntry[]): string {
-    const header = `🏷️ *${list.eventName || 'LEILÃO'}*`;
-    const title = 'Nº - ITEM - VALOR - LÍDER';
-    const body = rows.map((row) => {
-      const value = formatCurrency(row.currentAmount);
-      const leader = row.leader ?? '—';
-      return `${String(row.number).padStart(2, '0')} - ${row.name} - ${value} - ${leader}`;
-    });
-    return [header, '```', title, ...body, '```'].join('\n');
+    const eventName = list.eventName || 'LEILÃO';
+    const title = `📋 *LEILÃO — ${eventName}*`;
+
+    const padName = (name: string, size: number): string =>
+      name.length > size ? `${name.slice(0, size - 1)}…` : name.padEnd(size, ' ');
+
+    const line = (row: ListAuctionEntry): string =>
+      `${String(row.number).padStart(2, '0')}  ${padName(row.name, 18)}  ${formatCurrency(row.currentAmount).padEnd(13, ' ')}  ${row.leader ?? 'Sem lance'}`;
+
+    const header = `${'Nº'.padEnd(2)}  ${'ITEM'.padEnd(18)}  ${'VALOR'.padEnd(13)}  LÍDER`;
+
+    const codeBlock = (items: ListAuctionEntry[]): string =>
+      ['```', header, ...items.map(line), '```'].join('\n');
+
+    const ongoing = rows.filter((row) => row.status === AuctionStatus.OPEN);
+    const finalized = rows.filter((row) => row.status !== AuctionStatus.OPEN);
+
+    const sections: string[] = [];
+    if (ongoing.length > 0) {
+      sections.push('🟢 *EM ANDAMENTO*', codeBlock(ongoing));
+    }
+    if (finalized.length > 0) {
+      sections.push('✅ *FINALIZADOS*', codeBlock(finalized));
+    }
+
+    const howTo = [
+      '💡 *COMO DAR LANCE:*',
+      'Envie o *Nº do item* + o *valor* no chat.',
+      'Ex.: *01 300* ou *02 R$ 350*',
+      'Você também pode usar: *01 - 350* ou *01-350*.',
+    ].join('\n');
+    const footer = ongoing.length > 0 ? ['', howTo] : [];
+
+    return [title, '', ...sections, ...footer].join('\n');
   }
 
   private async announceList(groupId: string, list: ActiveListMemory): Promise<void> {
@@ -899,6 +951,18 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   private async tickListStatus(): Promise<void> {
     const now = Date.now();
     for (const [whatsappGroupId, list] of this.listGroups) {
+      // Reflete alterações de intervalo/edits feitos no painel enquanto a lista
+      // está em andamento (o valor em memória é atualizado a cada ciclo).
+      const event = await this.prisma.auctionEvent.findFirst({
+        where: { id: list.eventId, tenantId: list.tenantId },
+        select: { name: true, periodicStatusMinutes: true },
+      });
+      if (event) {
+        list.eventName = event.name;
+        list.periodicStatusMinutes = event.periodicStatusMinutes ?? 0;
+        this.listGroups.set(whatsappGroupId, list);
+      }
+
       // Envia periodicamente quando configurado.
       if (list.periodicStatusMinutes && list.periodicStatusMinutes > 0) {
         const periodMs = list.periodicStatusMinutes * 60 * 1000;
@@ -909,25 +973,6 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           const text = await this.listToText(list);
           await this.emit(list.tenantId, list.groupId, text);
         }
-      }
-
-      // Encerra itens da lista expirados.
-      const expired = await this.prisma.auction.findMany({
-        where: {
-          tenantId: list.tenantId,
-          auctionEventId: list.eventId,
-          status: AuctionStatus.OPEN,
-          endsAt: { lte: new Date() },
-        },
-        select: { id: true },
-      });
-      for (const auction of expired) {
-        await this.auctionsService.closeAuction(auction.id, list.tenantId);
-      }
-      if (expired.length > 0) {
-        this.listGroups.set(whatsappGroupId, list);
-        const text = await this.listToText(list);
-        await this.emit(list.tenantId, list.groupId, text);
       }
     }
   }

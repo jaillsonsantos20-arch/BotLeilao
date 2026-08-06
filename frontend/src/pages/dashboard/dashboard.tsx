@@ -23,6 +23,7 @@ import { formatCurrency } from '@/lib/format';
 import type { ApiEnvelope, DashboardSummary, TimeSeriesPoint, TopProduct } from '@/types/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PageHeader } from '@/components/layout/page-header';
 import { StatCard } from '@/components/dashboard/stat-card';
 import { WhatsAppCard } from '@/components/dashboard/whatsapp-card';
 
@@ -69,62 +70,68 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Visão geral</h2>
-        <p className="text-sm text-muted-foreground">
-          Acompanhe o desempenho dos seus leilões em tempo real.
-        </p>
-      </div>
+      <PageHeader
+        title="Visão geral"
+        description="Acompanhe o desempenho dos seus leilões em tempo real."
+      />
 
       <WhatsAppCard />
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
         <StatCard
           title="Leilões ativos"
           value={String(summary.data?.activeAuctions ?? 0)}
           icon={Timer}
+          tone="indigo"
           loading={loading}
         />
         <StatCard
           title="Leilões encerrados"
           value={String(summary.data?.closedAuctions ?? 0)}
           icon={Award}
+          tone="sky"
           loading={loading}
         />
         <StatCard
           title="Receita"
           value={formatCurrency(summary.data?.revenue ?? '0')}
           icon={Banknote}
+          tone="emerald"
           loading={loading}
         />
         <StatCard
           title="Maior lance"
           value={summary.data?.highestBid ? formatCurrency(summary.data.highestBid) : '—'}
           icon={Scale}
+          tone="amber"
           loading={loading}
         />
         <StatCard
           title="Produtos"
           value={String(summary.data?.totalProducts ?? 0)}
           icon={Package}
+          tone="violet"
           loading={loading}
         />
         <StatCard
           title="Participantes"
           value={String(summary.data?.totalParticipants ?? 0)}
           icon={Users}
+          tone="sky"
           loading={loading}
         />
         <StatCard
           title="Grupos"
           value={String(summary.data?.totalGroups ?? 0)}
           icon={Users}
+          tone="indigo"
           loading={loading}
         />
         <StatCard
           title="Lances"
           value={String(summary.data?.totalBids ?? 0)}
           icon={Scale}
+          tone="rose"
           loading={loading}
         />
       </div>
@@ -192,7 +199,7 @@ export function DashboardPage() {
             <div className="space-y-3">
               {topProducts.data.map((product, index) => (
                 <div key={product.productName} className="flex items-center gap-4">
-                  <span className="flex size-7 items-center justify-center rounded-md bg-muted text-xs font-semibold">
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white">
                     {index + 1}
                   </span>
                   <div className="min-w-0 flex-1">

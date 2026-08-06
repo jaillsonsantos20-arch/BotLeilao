@@ -276,8 +276,14 @@ export class AuctionsService {
    * após reinício do servidor.
    */
   async processExpiredAuctions(): Promise<Auction[]> {
+    // Itens de uma lista (leilão de evento) NÃO são encerrados pelo prazo:
+    // permanecem em andamento até o administrador finalizar no painel.
     const expired = await this.prisma.auction.findMany({
-      where: { status: AuctionStatus.OPEN, endsAt: { lte: new Date() } },
+      where: {
+        status: AuctionStatus.OPEN,
+        auctionEventId: null,
+        endsAt: { lte: new Date() },
+      },
       include: {
         group: true,
         bids: { where: { isCurrentLeader: true }, include: { auction: true } },

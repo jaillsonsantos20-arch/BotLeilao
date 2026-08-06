@@ -23,6 +23,16 @@ const NAV_ITEMS = [
   { to: '/whatsapp', label: 'WhatsApp', icon: MessageCircle, end: false },
 ];
 
+function initials(name: string | undefined): string {
+  if (!name) return 'U';
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+}
+
 /**
  * Layout principal autenticado: sidebar + header + conteúdo.
  * Mobile-first: a sidebar vira um drawer.
@@ -39,15 +49,21 @@ export function AppLayout() {
   }
 
   const sidebar = (
-    <div className="flex h-full flex-col gap-2 p-4">
-      <div className="mb-4 flex items-center gap-2 px-2">
-        <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-3 px-5 py-5">
+        <div className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/30">
           <Gavel className="size-5" />
         </div>
-        <span className="text-lg font-semibold tracking-tight">BotLeilão</span>
+        <div className="leading-tight">
+          <span className="block text-lg font-semibold tracking-tight">BotLeilão</span>
+          <span className="block text-xs text-muted-foreground">Painel de leilões</span>
+        </div>
       </div>
 
-      <nav className="flex flex-col gap-1">
+      <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
+        <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          Visão geral
+        </p>
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}
@@ -56,28 +72,57 @@ export function AppLayout() {
             onClick={() => setSidebarOpen(false)}
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                 isActive
-                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground'
                   : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
               )
             }
           >
-            <item.icon className="size-4" />
-            {item.label}
+            {({ isActive }) => (
+              <>
+                <span
+                  className={cn(
+                    'absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-primary transition-opacity',
+                    isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-40',
+                  )}
+                />
+                <item.icon className="size-4" />
+                {item.label}
+              </>
+            )}
           </NavLink>
         ))}
       </nav>
 
-      <div className="mt-auto rounded-lg border bg-card p-3 text-xs">
-        <p className="font-medium text-card-foreground">{user?.name}</p>
-        <p className="truncate text-muted-foreground">{user?.email}</p>
+      <div className="mx-3 mb-3 flex items-center gap-3 rounded-xl border bg-card/60 p-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+          {initials(user?.name)}
+        </div>
+        <div className="min-w-0 flex-1 leading-tight">
+          <p className="truncate text-sm font-medium text-card-foreground">{user?.name}</p>
+          <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 text-muted-foreground hover:text-destructive"
+          onClick={() => void handleLogout()}
+          aria-label="Sair"
+        >
+          <LogOut className="size-4" />
+        </Button>
       </div>
     </div>
   );
 
   return (
     <div className="min-h-screen bg-background">
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-x-0 top-0 z-0 h-64 bg-[radial-gradient(60%_100%_at_50%_0%,color-mix(in_oklch,var(--primary)_8%,transparent),transparent)]"
+      />
+
       {/* Sidebar desktop */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r bg-sidebar text-sidebar-foreground lg:block">
         {sidebar}
@@ -86,10 +131,7 @@ export function AppLayout() {
       {/* Sidebar mobile (drawer) */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setSidebarOpen(false)}
-          />
+          <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
           <aside className="absolute inset-y-0 left-0 w-72 border-r bg-sidebar text-sidebar-foreground shadow-xl">
             <button
               aria-label="Fechar menu"
@@ -103,8 +145,8 @@ export function AppLayout() {
         </div>
       )}
 
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur lg:px-8">
+      <div className="relative lg:pl-64">
+        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-lg lg:px-8">
           <Button
             variant="ghost"
             size="icon"
@@ -115,20 +157,31 @@ export function AppLayout() {
             <Menu className="size-5" />
           </Button>
 
-          <h1 className="text-sm font-medium lg:text-base">Painel de Leilões</h1>
+          <div className="flex items-center gap-2 lg:hidden">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
+              <Gavel className="size-4" />
+            </div>
+            <span className="text-sm font-semibold">BotLeilão</span>
+          </div>
 
           <div className="ml-auto flex items-center gap-1">
             <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Alternar tema">
               {theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => void handleLogout()}
-              aria-label="Sair"
-            >
-              <LogOut className="size-5" />
-            </Button>
+            <div className="ml-1 hidden items-center gap-2 border-l pl-3 sm:flex">
+              <div className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                {initials(user?.name)}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => void handleLogout()}
+              >
+                <LogOut className="size-4" />
+                Sair
+              </Button>
+            </div>
           </div>
         </header>
 

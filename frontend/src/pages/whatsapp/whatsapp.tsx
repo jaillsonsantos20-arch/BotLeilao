@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { PageHeader } from '@/components/layout/page-header';
 
 function useStatus() {
   return useQuery({
@@ -60,12 +61,10 @@ export function WhatsAppPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">WhatsApp</h2>
-        <p className="text-sm text-muted-foreground">
-          Conecte o bot ao WhatsApp para responder aos grupos.
-        </p>
-      </div>
+      <PageHeader
+        title="WhatsApp"
+        description="Conecte o bot ao WhatsApp para responder aos grupos."
+      />
 
       <Card>
         <CardHeader>

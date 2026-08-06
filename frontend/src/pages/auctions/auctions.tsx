@@ -48,6 +48,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { PageHeader } from '@/components/layout/page-header';
 
 const ITEM_STATUS: Record<ItemStatus, { label: string; variant: 'success' | 'warning' | 'secondary' }> = {
   AVAILABLE: { label: 'Disponível', variant: 'success' },
@@ -69,6 +70,22 @@ const AUCTION_STATUS: Record<AuctionStatus, { label: string; variant: 'success' 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const DEFAULT_ITEM_DURATION_SECONDS = 120;
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  PIX: 'Pix',
+  CASH: 'Dinheiro',
+  CARD: 'Cartão',
+};
+
+const PAYMENT_METHOD_STORAGE_KEY = 'auction-payment-methods';
+
+function loadPaymentMethods(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(PAYMENT_METHOD_STORAGE_KEY) ?? '{}') as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
 
 function useEvents() {
   return useQuery({
@@ -415,6 +432,16 @@ export function AuctionsPage() {
   const [reportGenerated, setReportGenerated] = useState(false);
   const [reportPaymentFilter, setReportPaymentFilter] = useState<'ALL' | 'PENDING' | 'PAID'>('ALL');
 
+  const [paymentMethods, setPaymentMethods] = useState<Record<string, string>>(loadPaymentMethods);
+
+  const setPaymentMethod = (auctionId: string, method: string) => {
+    setPaymentMethods((prev) => {
+      const next = { ...prev, [auctionId]: method };
+      localStorage.setItem(PAYMENT_METHOD_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   const openReport = () => {
     setSelectedItemIds([]);
     setReportGenerated(false);
@@ -500,24 +527,22 @@ export function AuctionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Leilões</h2>
-          <p className="text-sm text-muted-foreground">
-            Crie um leilão (ex.: "Leilão da Igreja"), cadastre os itens e inicie no WhatsApp.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={openReport}>
-            <FileText className="size-4" />
-            Relatório
-          </Button>
-          <Button onClick={() => setCreatingEvent((prev) => !prev)}>
-            {creatingEvent ? <X className="size-4" /> : <Plus className="size-4" />}
-            {creatingEvent ? 'Cancelar' : 'Criar novo leilão'}
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Leilões"
+        description={'Crie um leilão (ex.: "Leilão da Igreja"), cadastre os itens e inicie no WhatsApp.'}
+        actions={
+          <>
+            <Button variant="outline" onClick={openReport}>
+              <FileText className="size-4" />
+              Relatório
+            </Button>
+            <Button onClick={() => setCreatingEvent((prev) => !prev)}>
+              {creatingEvent ? <X className="size-4" /> : <Plus className="size-4" />}
+              {creatingEvent ? 'Cancelar' : 'Criar novo leilão'}
+            </Button>
+          </>
+        }
+      />
 
       {creatingEvent && (
         <Card>
@@ -1123,6 +1148,7 @@ export function AuctionsPage() {
                   <TableHead>Grupo</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Pagamento</TableHead>
+                  <TableHead>Método de pagamento</TableHead>
                   <TableHead>Vencedor</TableHead>
                   <TableHead className="text-right">Valor final</TableHead>
                   <TableHead className="text-right">Lances</TableHead>
@@ -1159,6 +1185,22 @@ export function AuctionsPage() {
                         >
                           <option value="PENDING">Pendente</option>
                           <option value="PAID">Pago</option>
+                        </select>
+                      </TableCell>
+                      <TableCell>
+                        <select
+                          aria-label={`Método de pagamento de ${auction.productName}`}
+                          className="flex h-8 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                          value={paymentMethods[auction.id] ?? ''}
+                          disabled={auction.status !== 'CLOSED' || !auction.winnerBid}
+                          onChange={(event) => setPaymentMethod(auction.id, event.target.value)}
+                        >
+                          <option value="" disabled>
+                            Selecionar
+                          </option>
+                          <option value="PIX">Pix</option>
+                          <option value="CASH">Dinheiro</option>
+                          <option value="CARD">Cartão</option>
                         </select>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
@@ -1261,6 +1303,7 @@ export function AuctionsPage() {
                         <TableHead>Leilão</TableHead>
                         <TableHead>Grupo</TableHead>
                         <TableHead>Vencedor</TableHead>
+                        <TableHead>Método de pagamento</TableHead>
                         <TableHead className="text-right">Valor final</TableHead>
                         <TableHead className="text-right">Data</TableHead>
                       </TableRow>
@@ -1281,6 +1324,9 @@ export function AuctionsPage() {
                               <TableCell className="text-muted-foreground">
                                 {row.auction?.winnerBid?.participantName || '—'}
                               </TableCell>
+                              <TableCell className="text-muted-foreground">
+                                {row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—'}
+                              </TableCell>
                               <TableCell className="text-right font-medium">
                                 {row.auction?.winnerBid
                                   ? formatCurrency(row.auction.winnerBid.amount)
@@ -1294,7 +1340,7 @@ export function AuctionsPage() {
                         })
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                          <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                             Nenhum item selecionado.
                           </TableCell>
                         </TableRow>
@@ -1318,6 +1364,7 @@ export function AuctionsPage() {
                         <th className="border border-black px-2 py-1 text-left text-xs">Leilão</th>
                         <th className="border border-black px-2 py-1 text-left text-xs">Grupo</th>
                         <th className="border border-black px-2 py-1 text-left text-xs">Vencedor</th>
+                        <th className="border border-black px-2 py-1 text-left text-xs">Método de pagamento</th>
                         <th className="border border-black px-2 py-1 text-right text-xs">Valor final</th>
                         <th className="border border-black px-2 py-1 text-right text-xs">Data</th>
                       </tr>
@@ -1334,6 +1381,9 @@ export function AuctionsPage() {
                             </td>
                             <td className="border border-black px-2 py-1 text-sm">
                               {row.auction?.winnerBid?.participantName || '—'}
+                            </td>
+                            <td className="border border-black px-2 py-1 text-sm">
+                              {row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—'}
                             </td>
                             <td className="border border-black px-2 py-1 text-right text-sm">
                               {row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—'}
