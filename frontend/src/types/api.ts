@@ -29,6 +29,16 @@ export interface User {
   email: string;
   role: 'SUPER_ADMIN' | 'ADMIN' | 'USER';
   isActive: boolean;
+  emailVerifiedAt: string | null;
+  totpEnabled: boolean;
+}
+
+export interface LoginResponse {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  requiresMfa?: boolean;
+  mfaToken?: string;
 }
 
 export interface DashboardSummary {
@@ -150,4 +160,48 @@ export interface Auction {
 export interface WhatsAppStatus {
   status: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR';
   qr: string | null;
+}
+
+export interface Plan {
+  id: string;
+  name: string;
+  description: string | null;
+  price: number;
+  maxGroups: number;
+  maxAuctions: number | null;
+  maxUsers: number;
+  features: string[];
+}
+
+export type SubscriptionStatus = 'TRIAL' | 'ACTIVE' | 'CANCELED' | 'EXPIRED';
+
+export interface Subscription {
+  id: string;
+  status: SubscriptionStatus;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  paymentRequired: boolean;
+  plan: Plan;
+}
+
+export interface PixPayment {
+  internalId: string;
+  externalId: string;
+  status: string;
+  transactionData: {
+    qrCode: string;
+    qrCodeBase64: string;
+    ticketUrl?: string;
+    expiresAt?: string;
+  };
+}
+
+export interface PaymentRecord {
+  id: string;
+  amount: number;
+  method: 'PIX' | 'CARD' | 'BOLETO' | 'MANUAL';
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+  paidAt: string | null;
+  createdAt: string;
+  plan: string | null;
 }

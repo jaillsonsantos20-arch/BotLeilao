@@ -11,6 +11,8 @@ export interface RequestUser {
   name: string;
   role: Role;
   isActive: boolean;
+  emailVerifiedAt: Date | null;
+  totpEnabled: boolean;
 }
 
 export interface JwtPayload {
@@ -18,6 +20,7 @@ export interface JwtPayload {
   email: string;
   tenantId: string;
   role: Role;
+  scope?: 'mfa-login';
 }
 
 export interface JwtRefreshPayload extends JwtPayload {

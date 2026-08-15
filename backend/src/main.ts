@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { join } from 'path';
 import { AppModule } from './app.module';
@@ -22,12 +23,18 @@ async function bootstrap(): Promise<void> {
   app.useLogger(nodeEnv === 'production' ? ['error', 'warn', 'log'] : ['error', 'warn', 'log', 'debug', 'verbose']);
 
   app.setGlobalPrefix(apiPrefix);
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: `/${apiPrefix}/uploads` });
+  app.useStaticAssets(join(process.cwd(), 'uploads'), {
+    prefix: `/${apiPrefix}/uploads`,
+    setHeaders: (res) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  });
   app.enableCors({
-    origin: true,
+    origin: config.get('corsOrigins', { infer: true }),
     credentials: true,
   });
   app.use(helmet());
+  app.use(cookieParser());
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -52,13 +59,19 @@ async function bootstrap(): Promise<void> {
     .addTag('items', 'Itens cadastrados para leilão')
     .addTag('auctions', 'Leilões e regras de negócio')
     .addTag('bids', 'Lances')
+    .addTag('plans', 'Planos (página de vendas)')
+    .addTag('subscriptions', 'Assinaturas do tenant')
+    .addTag('payments', 'Pagamentos (PIX/Mercado Pago)')
     .addTag('dashboard', 'Métricas e gráficos')
     .addTag('reports', 'Relatórios e exportação')
     .addTag('whatsapp', 'Sessão do bot WhatsApp')
     .build();
 
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup(`${apiPrefix}/docs`, app, document);
+  // Swagger fica disponível apenas fora de produção (documentação interna).
+  if (nodeEnv !== 'production') {
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup(`${apiPrefix}/docs`, app, document);
+  }
 
   await ensureStartupSeed();
 

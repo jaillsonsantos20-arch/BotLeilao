@@ -8,16 +8,21 @@ import {
   type ReactNode,
 } from 'react';
 import { api } from '@/lib/api';
-import { tokenStore } from '@/lib/storage';
-import type { ApiEnvelope, AuthTokens, User } from '@/types/api';
+import type { ApiEnvelope, LoginResponse, User } from '@/types/api';
+
+export interface MfaRequired {
+  requiresMfa: true;
+  mfaToken: string;
+}
 
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<void | MfaRequired>;
   register: (data: RegisterInput) => Promise<void>;
   logout: () => Promise<void>;
+  verifyMfa: (mfaToken: string, code: string) => Promise<void>;
 }
 
 export interface RegisterInput {
@@ -26,13 +31,10 @@ export interface RegisterInput {
   password: string;
   companyName: string;
   cnpj?: string;
+  planId?: string;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-function applyTokens(tokens: AuthTokens): void {
-  tokenStore.setTokens(tokens.accessToken, tokens.refreshToken);
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -40,12 +42,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     async function loadSession(): Promise<void> {
-      const hasToken = tokenStore.getAccessToken() !== null;
-      if (!hasToken) {
-        setIsLoading(false);
-        return;
-      }
-
       try {
         const response = await api.get<ApiEnvelope<User>>('/auth/me');
         setUser(response.data.data);
@@ -60,27 +56,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const response = await api.post<ApiEnvelope<AuthTokens>>('/auth/login', { email, password });
-    applyTokens(response.data.data);
+    const response = await api.post<ApiEnvelope<LoginResponse>>('/auth/login', { email, password });
+    const result = response.data.data;
+
+    if (result.requiresMfa && result.mfaToken) {
+      return { requiresMfa: true as const, mfaToken: result.mfaToken };
+    }
+
+    const me = await api.get<ApiEnvelope<User>>('/auth/me');
+    setUser(me.data.data);
+  }, []);
+
+  const verifyMfa = useCallback(async (mfaToken: string, code: string) => {
+    await api.post('/auth/mfa/verify', { mfaToken, code });
     const me = await api.get<ApiEnvelope<User>>('/auth/me');
     setUser(me.data.data);
   }, []);
 
   const register = useCallback(async (data: RegisterInput) => {
-    const response = await api.post<ApiEnvelope<AuthTokens>>('/auth/register', data);
-    applyTokens(response.data.data);
+    await api.post('/auth/register', data);
     const me = await api.get<ApiEnvelope<User>>('/auth/me');
     setUser(me.data.data);
   }, []);
 
   const logout = useCallback(async () => {
-    const refreshToken = tokenStore.getRefreshToken();
     try {
-      if (refreshToken) {
-        await api.post('/auth/logout', { refreshToken });
-      }
+      await api.post('/auth/logout');
     } finally {
-      tokenStore.clear();
       setUser(null);
     }
   }, []);
@@ -93,8 +95,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       logout,
+      verifyMfa,
     }),
-    [user, isLoading, login, register, logout],
+    [user, isLoading, login, register, logout, verifyMfa],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

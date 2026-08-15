@@ -131,6 +131,20 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Verificação de e-mail
+  emailVerifiedAt            DateTime?
+  emailVerificationToken     String?   @unique
+  emailVerificationExpiresAt DateTime?
+
+  // Recuperação de senha
+  passwordResetToken     String?   @unique
+  passwordResetExpiresAt DateTime?
+
+  // MFA/TOTP (secret + códigos de recuperação armazenados apenas com hash)
+  totpSecret       String?
+  totpEnabled      Boolean  @default(false)
+  totpBackupCodes  String? // JSON com SHA-256 de cada código de recuperação
+
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
   audits        Audit[]
