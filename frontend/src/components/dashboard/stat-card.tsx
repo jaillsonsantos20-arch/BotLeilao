@@ -15,12 +15,12 @@ interface StatCardProps {
 }
 
 const TONES: Record<StatTone, { chip: string; icon: string }> = {
-  indigo: { chip: 'bg-indigo-500/12 text-indigo-600 ring-indigo-500/20 dark:text-indigo-400', icon: '' },
-  emerald: { chip: 'bg-emerald-500/12 text-emerald-600 ring-emerald-500/20 dark:text-emerald-400', icon: '' },
-  amber: { chip: 'bg-amber-500/15 text-amber-600 ring-amber-500/25 dark:text-amber-400', icon: '' },
-  rose: { chip: 'bg-rose-500/12 text-rose-600 ring-rose-500/20 dark:text-rose-400', icon: '' },
-  sky: { chip: 'bg-sky-500/12 text-sky-600 ring-sky-500/20 dark:text-sky-400', icon: '' },
-  violet: { chip: 'bg-violet-500/12 text-violet-600 ring-violet-500/20 dark:text-violet-400', icon: '' },
+  indigo: { chip: 'bg-indigo-500/12 text-indigo-600 ring-indigo-500/20', icon: '' },
+  emerald: { chip: 'bg-emerald-500/12 text-emerald-600 ring-emerald-500/20', icon: '' },
+  amber: { chip: 'bg-amber-500/15 text-amber-600 ring-amber-500/25', icon: '' },
+  rose: { chip: 'bg-rose-500/12 text-rose-600 ring-rose-500/20', icon: '' },
+  sky: { chip: 'bg-sky-500/12 text-sky-600 ring-sky-500/20', icon: '' },
+  violet: { chip: 'bg-violet-500/12 text-violet-600 ring-violet-500/20', icon: '' },
 };
 
 /**

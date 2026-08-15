@@ -5,22 +5,22 @@ import {
   LogOut,
   Menu,
   MessageCircle,
-  Moon,
-  Sun,
+  ShieldCheck,
   Users,
   X,
 } from 'lucide-react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/stores/auth';
-import { useTheme } from '@/components/layout/theme-provider';
+import { SubscriptionGate } from '@/components/layout/subscription-gate';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/grupos', label: 'Grupos', icon: Users, end: false },
-  { to: '/leiloes', label: 'Leilões', icon: Gavel, end: false },
-  { to: '/whatsapp', label: 'WhatsApp', icon: MessageCircle, end: false },
+  { to: '/painel', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/painel/grupos', label: 'Grupos', icon: Users, end: false },
+  { to: '/painel/leiloes', label: 'Leilões', icon: Gavel, end: false },
+  { to: '/painel/whatsapp', label: 'WhatsApp', icon: MessageCircle, end: false },
+  { to: '/painel/seguranca', label: 'Segurança', icon: ShieldCheck, end: false },
 ];
 
 function initials(name: string | undefined): string {
@@ -40,12 +40,11 @@ function initials(name: string | undefined): string {
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
-  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
   async function handleLogout(): Promise<void> {
     await logout();
-    navigate('/login');
+    navigate('/');
   }
 
   const sidebar = (
@@ -165,9 +164,6 @@ export function AppLayout() {
           </div>
 
           <div className="ml-auto flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Alternar tema">
-              {theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
-            </Button>
             <div className="ml-1 hidden items-center gap-2 border-l pl-3 sm:flex">
               <div className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
                 {initials(user?.name)}
@@ -186,7 +182,9 @@ export function AppLayout() {
         </header>
 
         <main className="mx-auto max-w-7xl p-4 lg:p-8">
-          <Outlet />
+          <SubscriptionGate>
+            <Outlet />
+          </SubscriptionGate>
         </main>
       </div>
     </div>

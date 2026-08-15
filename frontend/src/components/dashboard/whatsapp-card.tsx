@@ -71,9 +71,9 @@ export function WhatsAppCard() {
         {status === 'CONNECTING' && qr ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border bg-white p-3">
             <QRCodeSVG value={qr} size={150} />
-            <p className="text-center text-xs text-muted-foreground">
+            <p className="text-center text-xs text-slate-600">
               Escaneie com o WhatsApp do número leiloeiro.{' '}
-              <Link to="/whatsapp" className="font-medium text-primary hover:underline">
+              <Link to="/whatsapp" className="font-medium text-indigo-600 hover:underline">
                 Ver maior
               </Link>
             </p>

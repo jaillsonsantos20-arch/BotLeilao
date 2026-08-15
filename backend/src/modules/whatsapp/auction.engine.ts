@@ -6,6 +6,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { Auction, AuctionEventStatus, AuctionStatus, ItemStatus, Prisma } from '@prisma/client';
+import { Message } from 'whatsapp-web.js';
 import { AuctionsService } from '../auctions/auctions.service';
 import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../../common/database/prisma.service';
@@ -27,6 +28,9 @@ export type MessageSender = (
   text: string,
   mediaPath?: string,
 ) => Promise<void>;
+
+/** Envia uma reação (ex.: ✅) na mensagem do participante. */
+export type MessageReactionSender = (message: Message, emoji: string) => Promise<void>;
 
 /**
  * Motor de leilões do WhatsApp.
@@ -61,6 +65,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /** assinantes para envio de mensagens (desacopla o transporte) */
   private readonly subscribers = new Set<MessageSender>();
 
+  /** assinantes para reações em mensagens dos participantes */
+  private readonly reactors = new Set<MessageReactionSender>();
+
   private tickTimer: NodeJS.Timeout | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
   private statusTimer: NodeJS.Timeout | null = null;
@@ -73,6 +80,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
   subscribe(sender: MessageSender): void {
     this.subscribers.add(sender);
+  }
+
+  subscribeReaction(reactor: MessageReactionSender): void {
+    this.reactors.add(reactor);
   }
 
   async onModuleInit(): Promise<void> {
@@ -102,8 +113,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
    * Recupera leilões abertos do banco para a memória (após restart).
    */
   private async loadActiveAuctions(): Promise<void> {
+    // Itens de lista (auctionEventId != null) NÃO entram aqui: ficam em
+    // andamento até o administrador finalizar no painel. O tick só gerencia
+    // leilões avulsos (item único).
     const auctions = await this.prisma.auction.findMany({
-      where: { status: AuctionStatus.OPEN },
+      where: { status: AuctionStatus.OPEN, auctionEventId: null },
       select: {
         id: true,
         tenantId: true,
@@ -175,6 +189,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   // -------------------------------------------------------------------------
 
   async startSetup(context: WhatsAppGroupContext): Promise<string> {
+    if (!context.isAdmin) {
+      return '⛔ Apenas *administradores do grupo* podem iniciar um leilão.';
+    }
     if (this.active.has(context.groupId)) {
       return '⚠️ Já existe um leilão em andamento neste grupo.';
     }
@@ -409,7 +426,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       await this.emit(list.tenantId, list.groupId, text);
       await this.closeEventGroups(list.tenantId, list.eventId);
       this.listGroups.delete(context.groupId);
-      return '🚫 *LISTA ENCERRADA* por um administrador.';
+      return '*LISTA ENCERRADA* por um administrador.';
     }
 
     const active = this.active.get(context.groupId);
@@ -457,18 +474,116 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Abre a lista de um evento em um grupo a partir do painel.
+   * Abre (ou atualiza) a lista de um evento em um grupo a partir do painel.
+   *
+   * Se a lista já está em andamento, apenas os itens cadastrados após a
+   * abertura ganham um leilão (mantendo os lances já efetuados) e a lista
+   * atualizada é reenviada no WhatsApp.
    */
   async openListFromPanel(
     tenantId: string,
     eventId: string,
     internalGroupId: string,
-  ): Promise<{ itemCount: number }> {
-    const list = await this.startListInGroup(tenantId, internalGroupId, eventId);
-    this.listGroups.set(list.groupId, list);
+  ): Promise<{ created: number; itemCount: number }> {
+    let list = this.findListByEvent(eventId, tenantId);
+
+    if (!list) {
+      const event = await this.prisma.auctionEvent.findFirst({
+        where: { id: eventId, tenantId },
+      });
+      if (!event) {
+        throw new Error('Leilão não encontrado.');
+      }
+      if (event.status !== AuctionEventStatus.OPEN) {
+        throw new Error('Leilão de lista não encontrado ou já encerrado.');
+      }
+      const group = await this.prisma.group.findFirst({
+        where: { id: internalGroupId || event.groupId || '', tenantId, isActive: true },
+      });
+      if (!group || !group.whatsappGroupId) {
+        throw new Error('Grupo não vinculado ao WhatsApp.');
+      }
+
+      const otherOpen = await this.prisma.auction.findFirst({
+        where: {
+          tenantId,
+          groupId: group.id,
+          status: AuctionStatus.OPEN,
+          auctionEventId: { not: event.id },
+        },
+        select: { id: true },
+      });
+      if (otherOpen) {
+        throw new Error('Já existe um leilão ativo neste grupo.');
+      }
+
+      list = {
+        tenantId,
+        groupId: group.whatsappGroupId,
+        internalGroupId: group.id,
+        eventId: event.id,
+        eventName: event.name,
+        periodicStatusMinutes: event.periodicStatusMinutes ?? 0,
+        lastStatusAt: Date.now(),
+      };
+      this.listGroups.set(list.groupId, list);
+    }
+
+    const created = await this.syncNewItems(list);
     const text = await this.listToText(list);
     await this.emit(list.tenantId, list.groupId, text);
-    return { itemCount: (await this.listAuctionSnapshot(list)).length };
+    return { created, itemCount: (await this.listAuctionSnapshot(list)).length };
+  }
+
+  /**
+   * Retorna a lista (evento) ativa em memória para um evento do tenant.
+   */
+  private findListByEvent(eventId: string, tenantId: string): ActiveListMemory | undefined {
+    for (const list of this.listGroups.values()) {
+      if (list.eventId === eventId && list.tenantId === tenantId) return list;
+    }
+    return undefined;
+  }
+
+  /**
+   * Cria leilões apenas para os itens que ainda não possuem leilão no evento.
+   * Itens já em andamento (com lances) são preservados intactos.
+   */
+  private async syncNewItems(list: ActiveListMemory): Promise<number> {
+    const items = await this.prisma.item.findMany({
+      where: { tenantId: list.tenantId, auctionEventId: list.eventId },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+    });
+    const auctions = await this.prisma.auction.findMany({
+      where: { tenantId: list.tenantId, auctionEventId: list.eventId, itemId: { not: null } },
+      select: { itemId: true },
+    });
+    const hasAuctionFor = new Set(auctions.map((auction) => auction.itemId));
+
+    let created = 0;
+    for (const item of items) {
+      if (hasAuctionFor.has(item.id)) continue;
+      await this.prisma.auction.create({
+        data: {
+          tenantId: list.tenantId,
+          groupId: list.internalGroupId,
+          itemId: item.id,
+          auctionEventId: list.eventId,
+          productName: item.name,
+          initialValue: item.initialValue,
+          durationSeconds: item.durationSeconds,
+          status: AuctionStatus.OPEN,
+          startedAt: new Date(),
+          endsAt: new Date(Date.now() + item.durationSeconds * 1000),
+        },
+      });
+      await this.prisma.item.update({
+        where: { id: item.id },
+        data: { status: ItemStatus.ON_AUCTION },
+      });
+      created += 1;
+    }
+    return created;
   }
 
   /**
@@ -496,14 +611,23 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
    */
   private async listFinalText(list: ActiveListMemory): Promise<string> {
     const rows = await this.listAuctionSnapshot(list);
-    const header = `🏁 *LEILÃO FINALIZADO*\n🏷️ *${list.eventName || 'LEILÃO'}*`;
-    const title = 'Nº - ITEM - VALOR - VENCEDOR';
-    const body = rows.map((row) => {
-      const value = formatCurrency(row.currentAmount);
-      const winner = row.leader ?? 'Sem lance';
-      return `${String(row.number).padStart(2, '0')} - ${row.name} - ${value} - ${winner}`;
-    });
-    return [header, '```', title, ...body, '```'].join('\n');
+    const header = `*LEILÃO FINALIZADO*\n*${list.eventName || 'LEILÃO'}*`;
+    const body = rows.map((row) => this.itemBlock(row)).join('\n\n');
+    return [header, '', `*FINALIZADO*\n${body}`].join('\n');
+  }
+
+  /**
+   * Bloco de um item no padrão da lista (status e resumo final):
+   *   *02* • Nome
+   *   💰 R$ 400,00 | 👤 Líder  (ou 🏆 Vencedor quando encerrado)
+   */
+  private itemBlock(row: ListAuctionEntry): string {
+    const leader = row.leader ?? 'Sem lance';
+    const prefix = row.status === AuctionStatus.OPEN ? 'Líder:' : 'Vencedor:';
+    return [
+      `*${String(row.number).padStart(2, '0')}* • ${row.name}`,
+      `Valor: ${formatCurrency(row.currentAmount)} | ${prefix} ${leader}`,
+    ].join('\n');
   }
 
   async getHistory(context: WhatsAppGroupContext): Promise<string> {
@@ -614,10 +738,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   // Fluxo de criação e lances (mensagens que não são comandos)
   // -------------------------------------------------------------------------
 
-  async handleChatInput(context: WhatsAppGroupContext, text: string): Promise<void> {
+  async handleChatInput(context: WhatsAppGroupContext, message: Message): Promise<void> {
+    const text = (message.body ?? '').trim();
     const list = this.listGroups.get(context.groupId);
     if (list) {
-      await this.handleListBid(context, list, text);
+      await this.handleListBid(context, list, message, text);
       return;
     }
 
@@ -629,7 +754,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
     const amount = parseAmount(text);
     if (amount !== null && amount > 0) {
-      await this.placeBid(context, amount);
+      await this.placeBid(context, message, amount);
     }
   }
 
@@ -640,17 +765,30 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   private async handleListBid(
     context: WhatsAppGroupContext,
     list: ActiveListMemory,
+    message: Message,
     text: string,
   ): Promise<void> {
     const match = /^\s*(\d+)\s*(?:[-–—]|\s+)\s*(.+)$/.exec(text);
     if (!match) {
-      const looksLikeAmount = parseAmount(text) !== null;
-      await this.reply(
-        context,
-        looksLikeAmount
-          ? 'ℹ️ Aqui é um leilão de *lista*: o lance precisa do *Nº do item*.\nEnvie o formato: *01 300* (Nº do item + valor).'
-          : 'ℹ️ Formato de lance não reconhecido.\nEnvie: *01 300* (Nº do item + valor).',
-      );
+      // Apenas um "valor" (ex.: "300", "R$ 350"): provável lance sem o nº do item.
+      if (parseAmount(text) !== null) {
+        await this.reply(
+          context,
+          'ℹ️ Aqui é um leilão de *lista*: o lance precisa do *Nº do item*.\nEnvie o formato: *01 300* (Nº do item + valor).',
+        );
+        return;
+      }
+
+      // Começa com número (tentativa de lance) mas está malformada → orienta.
+      if (/^\s*\d/.test(text)) {
+        await this.reply(
+          context,
+          'ℹ️ Formato de lance não reconhecido.\nEnvie: *01 300* (Nº do item + valor).',
+        );
+        return;
+      }
+
+      // Texto que não se parece com lance (conversa normal) → ignora silenciosamente.
       return;
     }
 
@@ -680,18 +818,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         participantName: context.senderName ?? undefined,
       });
 
-      const confirmation = [
-        '✅ *LANCE REGISTRADO!*',
-        `🆔 Item *${String(entry.number).padStart(2, '0')}*: *${entry.name}*`,
-        `💰 Valor: *${formatCurrency(amount)}*`,
-        `👤 Novo líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
-      ].join('\n');
-      await this.emit(
-        list.tenantId,
-        list.groupId,
-        confirmation,
-        imageUrlToLocalPath(entry.imageUrl),
-      );
+      // Confirma sem poluir o chat: apenas reage à mensagem do participante.
+      // Valor e vencedor aparecem no fechamento ou via !status.
+      await this.react(message, '✅');
 
       list.lastStatusAt = Date.now();
       this.listGroups.set(context.groupId, list);
@@ -790,7 +919,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async placeBid(context: WhatsAppGroupContext, amount: number): Promise<void> {
+  private async placeBid(
+    context: WhatsAppGroupContext,
+    message: Message,
+    amount: number,
+  ): Promise<void> {
     const active = this.active.get(context.groupId);
     if (!active || active.closed) {
       return;
@@ -810,18 +943,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       active.warnedSecond = false;
       this.active.set(context.groupId, active);
 
-      const mediaPath = await this.resolveItemMediaPath(active.itemId);
-      await this.emit(
-        context.tenantId,
-        context.groupId,
-        [
-          '✅ *LANCE REGISTRADO!*',
-          `💵 Valor: *${formatCurrency(amount)}*`,
-          `👤 Líder: *${context.senderName ?? context.senderId.split('@')[0]}*`,
-          `⏱️ Leilão reiniciado: *${auction.durationSeconds}s*`,
-        ].join('\n'),
-        mediaPath,
-      );
+      // Confirma sem poluir o chat: apenas reage à mensagem do participante.
+      // Valor e vencedor aparecem no fechamento ou via !status.
+      await this.react(message, '✅');
     } catch (error) {
       await this.reply(context, this.friendlyError(error));
     }
@@ -905,39 +1029,27 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
   private renderList(list: ActiveListMemory, rows: ListAuctionEntry[]): string {
     const eventName = list.eventName || 'LEILÃO';
-    const title = `📋 *LEILÃO — ${eventName}*`;
+    const title = `*LEILÃO — ${eventName}*`;
 
-    const padName = (name: string, size: number): string =>
-      name.length > size ? `${name.slice(0, size - 1)}…` : name.padEnd(size, ' ');
-
-    const line = (row: ListAuctionEntry): string =>
-      `${String(row.number).padStart(2, '0')}  ${padName(row.name, 18)}  ${formatCurrency(row.currentAmount).padEnd(13, ' ')}  ${row.leader ?? 'Sem lance'}`;
-
-    const header = `${'Nº'.padEnd(2)}  ${'ITEM'.padEnd(18)}  ${'VALOR'.padEnd(13)}  LÍDER`;
-
-    const codeBlock = (items: ListAuctionEntry[]): string =>
-      ['```', header, ...items.map(line), '```'].join('\n');
+    const section = (items: ListAuctionEntry[]): string =>
+      items.map((row) => this.itemBlock(row)).join('\n\n');
 
     const ongoing = rows.filter((row) => row.status === AuctionStatus.OPEN);
     const finalized = rows.filter((row) => row.status !== AuctionStatus.OPEN);
 
     const sections: string[] = [];
     if (ongoing.length > 0) {
-      sections.push('🟢 *EM ANDAMENTO*', codeBlock(ongoing));
+      sections.push(`*EM ANDAMENTO*\n${section(ongoing)}`);
     }
     if (finalized.length > 0) {
-      sections.push('✅ *FINALIZADOS*', codeBlock(finalized));
+      sections.push(`*FINALIZADO*\n${section(finalized)}`);
     }
 
-    const howTo = [
-      '💡 *COMO DAR LANCE:*',
-      'Envie o *Nº do item* + o *valor* no chat.',
-      'Ex.: *01 300* ou *02 R$ 350*',
-      'Você também pode usar: *01 - 350* ou *01-350*.',
-    ].join('\n');
+    const howTo =
+      '_Como dar lance: envie o Nº do item + o valor no chat (ex.: 01 300, 02 R$ 350 ou 01 - 350)._';
     const footer = ongoing.length > 0 ? ['', howTo] : [];
 
-    return [title, '', ...sections, ...footer].join('\n');
+    return [title, '', sections.join('\n\n\n'), ...footer].join('\n');
   }
 
   private async announceList(groupId: string, list: ActiveListMemory): Promise<void> {
@@ -1071,6 +1183,12 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     await Promise.allSettled(
       Array.from(this.subscribers).map((send) => send(tenantId, groupId, text, mediaPath)),
+    );
+  }
+
+  private async react(message: Message, emoji: string): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.reactors).map((react) => react(message, emoji)),
     );
   }
 

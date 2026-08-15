@@ -32,6 +32,6 @@ export function GuestRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
 
   if (isLoading) return <FullScreenLoader />;
-  if (isAuthenticated) return <Navigate to="/" replace />;
+  if (isAuthenticated) return <Navigate to="/painel" replace />;
   return <>{children}</>;
 }

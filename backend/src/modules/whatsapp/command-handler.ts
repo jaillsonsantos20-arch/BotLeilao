@@ -25,7 +25,7 @@ export class CommandRouter {
       if (text.startsWith('!')) {
         await this.handleCommand(context, text);
       } else {
-        await this.engine.handleChatInput(context, text);
+        await this.engine.handleChatInput(context, message);
       }
     } catch (error) {
       this.logger.error(`Erro ao processar mensagem: ${(error as Error).message}`);

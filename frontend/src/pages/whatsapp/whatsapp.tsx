@@ -88,10 +88,10 @@ export function WhatsAppPage() {
           {status === 'CONNECTING' && qr ? (
             <div className="flex flex-col items-center gap-3 rounded-xl border bg-white p-6">
               <QRCodeSVG value={qr} size={256} />
-              <p className="text-center text-sm text-muted-foreground">
-                Abra o WhatsApp no celular → <strong>Aparelhos conectados</strong> →{' '}
-                <strong>Conectar um aparelho</strong> → escaneie este código.
-              </p>
+<p className="text-center text-sm text-slate-700">
+              Abra o WhatsApp no celular → <strong>Aparelhos conectados</strong> →{' '}
+              <strong>Conectar um aparelho</strong> → escaneie este código.
+            </p>
             </div>
           ) : status === 'CONNECTING' && !qr ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">

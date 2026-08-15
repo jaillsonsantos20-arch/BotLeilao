@@ -2,7 +2,8 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { SessionStatus } from '@prisma/client';
 import { Client, Contact, GroupChat, LocalAuth, Message, MessageMedia } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
-import { existsSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, rmSync } from 'fs';
+import { join } from 'path';
 import { PrismaService } from '../../common/database/prisma.service';
 import { AuctionEngine } from './auction.engine';
 import { CommandRouter } from './command-handler';
@@ -46,6 +47,14 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       this.sendToGroup(tenantId, groupId, text, mediaPath),
     );
 
+    // O motor confirma lances reagindo (✅) à mensagem do participante.
+    this.engine.subscribeReaction((message, emoji) => message.react(emoji));
+
+    // Remove locks órfãos de Chromium que sobram quando o container é recriado
+    // enquanto o browser antigo ainda segurava o perfil (erro "Code: 21").
+    // Sem isso, o bot nunca consegue lançar o browser após um rebuild.
+    this.cleanupStaleChromiumLocks();
+
     // Recupera sessões conectadas/conectando para reconectar automaticamente.
     const sessions = await this.prisma.whatsAppSession.findMany({
       where: { status: { in: [SessionStatus.CONNECTED, SessionStatus.CONNECTING] } },
@@ -65,12 +74,60 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Remove arquivos de lock deixados pelo Chromium quando o processo anterior
+   * foi encerrado de forma abrupta (ex.: recriação do container com rebuild).
+   * Sem a limpeza, o whatsapp-web.js falha ao lançar o browser com o erro
+   * "The profile appears to be in use by another Chromium process" (Code: 21).
+   */
+  private cleanupStaleChromiumLocks(): void {
+    const authDir = join(process.cwd(), '.wwebjs_auth');
+    if (!existsSync(authDir)) return;
+
+    const lockNames = ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort'];
+    for (const entry of readdirSync(authDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+
+      const profileDir = join(authDir, entry.name);
+      for (const lockName of lockNames) {
+        const lockPath = join(profileDir, lockName);
+        try {
+          // lstat evita seguir o symlink. O Chromium deixa SingletonLock/Socket
+          // como symlinks "pendurados" (alvo aponta para um processo que já
+          // morreu) — nesse caso existsSync retorna false e o lock nunca era
+          // removido, causando o erro Code: 21 a cada reinício.
+          lstatSync(lockPath);
+          rmSync(lockPath);
+          this.logger.warn(`Removido lock órfão de Chromium: ${entry.name}/${lockName}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            this.logger.debug(`Não foi possível remover o lock ${lockName}: ${String(error)}`);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Conecta (ou reconecta) o WhatsApp de um tenant.
    * O QR Code é exibido no terminal do processo.
    */
   async connect(tenantId: string): Promise<{ status: SessionStatus }> {
-    if (this.clients.has(tenantId)) {
-      return this.sessionStatus(tenantId);
+    const existing = this.clients.get(tenantId);
+    if (existing) {
+      const { status } = await this.sessionStatus(tenantId);
+
+      // Cliente preso em memória sem pareamento ativo (ex.: browser morreu e o
+      // evento "disconnected" não disparou). Destrói e recria para gerar QR novo.
+      if (status === SessionStatus.ERROR || status === SessionStatus.DISCONNECTED) {
+        this.logger.warn(
+          `Cliente ${tenantId} preso em ${status} — recriando para gerar QR novo.`,
+        );
+        await existing.destroy().catch(() => undefined);
+        this.clients.delete(tenantId);
+        this.latestQr.delete(tenantId);
+      } else {
+        return { status };
+      }
     }
 
     const session = await this.prisma.whatsAppSession.upsert({
@@ -209,6 +266,13 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
   }
 
   private createClient(tenantId: string, clientId: string): void {
+    // Marca a tentativa como em andamento logo no início, para que o connect()
+    // não destrua o cliente enquanto o QR/auth estão pendentes.
+    void this.persistSession(tenantId, {
+      status: SessionStatus.CONNECTING,
+      lastError: null,
+    });
+
     const browserPath = process.env.WHATSAPP_BROWSER_PATH;
     const client = new Client({
       authStrategy: new LocalAuth({ clientId }),
@@ -293,7 +357,11 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
   private async handleIncomingMessage(tenantId: string, message: Message): Promise<void> {
     try {
-      if (message.fromMe) {
+      // Mensagens do próprio dono da sessão (fromMe) só são processadas quando
+      // são comandos "!" — para que o bot responda a !status/!ajuda do dono.
+      // As demais (saída do próprio bot, lances etc.) continuam ignoradas para
+      // o bot não reagir à própria mensagem.
+      if (message.fromMe && !(message.body ?? '').trim().startsWith('!')) {
         this.logger.log(
           `[DIAG] Ignorada mensagem própria (fromMe) de ${message.from}: ${(message.body ?? '').slice(0, 80)}`,
         );

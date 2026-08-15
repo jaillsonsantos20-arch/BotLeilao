@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown,
@@ -12,6 +12,7 @@ import {
   Loader2,
   Package,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -67,8 +68,6 @@ const AUCTION_STATUS: Record<AuctionStatus, { label: string; variant: 'success' 
   CANCELLED: { label: 'Cancelado', variant: 'destructive' },
 };
 
-const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const DEFAULT_ITEM_DURATION_SECONDS = 120;
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
@@ -208,7 +207,6 @@ export function AuctionsPage() {
   const [itemName, setItemName] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [itemValue, setItemValue] = useState('');
-  const [itemImageUrl, setItemImageUrl] = useState<string | null>(null);
   const [itemFormError, setItemFormError] = useState<string | null>(null);
 
   const [listGroupId, setListGroupId] = useState('');
@@ -226,6 +224,8 @@ export function AuctionsPage() {
     () => events.data?.find((event) => event.id === selectedEventId) ?? null,
     [events.data, selectedEventId],
   );
+
+  const listStarted = (selectedEvent?.auctionCount ?? 0) > 0;
 
   const createEvent = useMutation({
     mutationFn: async () => {
@@ -299,18 +299,6 @@ export function AuctionsPage() {
     onError: (err) => setEventError(extractError(err, 'Falha ao excluir o leilão.')),
   });
 
-  const uploadImage = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append('file', file);
-      const response = await api.post<ApiEnvelope<{ url: string }>>('/items/upload-image', formData, {
-        headers: { 'Content-Type': null },
-      });
-      return response.data.data.url;
-    },
-    onError: (err) => setItemFormError(extractError(err, 'Falha ao enviar a foto.')),
-  });
-
   const createItem = useMutation({
     mutationFn: async () => {
       if (!selectedEventId) throw new Error('Selecione um leilão.');
@@ -318,7 +306,6 @@ export function AuctionsPage() {
         auctionEventId: selectedEventId,
         name: itemName,
         description: itemDescription || undefined,
-        imageUrl: itemImageUrl ?? undefined,
         initialValue: parseFloat(itemValue),
         durationSeconds: DEFAULT_ITEM_DURATION_SECONDS,
       });
@@ -329,7 +316,6 @@ export function AuctionsPage() {
       setItemName('');
       setItemDescription('');
       setItemValue('');
-      setItemImageUrl(null);
       setItemFormError(null);
     },
     onError: (err) => setItemFormError(extractError(err, 'Falha ao cadastrar o item.')),
@@ -373,25 +359,6 @@ export function AuctionsPage() {
   function handleCreateItem(event: FormEvent): void {
     event.preventDefault();
     createItem.mutate();
-  }
-
-  function handleFileSelected(event: ChangeEvent<HTMLInputElement>): void {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setItemFormError('Formato de imagem inválido. Use JPEG, PNG, WebP ou GIF.');
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      setItemFormError('A imagem deve ter no máximo 5MB.');
-      return;
-    }
-
-    setItemFormError(null);
-    uploadImage.mutate(file, {
-      onSuccess: (url) => setItemImageUrl(url),
-    });
   }
 
   const canLeilao = groups.data && groups.data.length > 0;
@@ -774,12 +741,12 @@ export function AuctionsPage() {
                 <div>
                   <h4 className="flex items-center gap-2 font-medium">
                     <ListChecks className="size-4" />
-                    Iniciar lista no grupo
+                    {listStarted ? 'Atualizar lista no grupo' : 'Iniciar lista no grupo'}
                   </h4>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Abre um leilão simultâneo por item. Os participantes dão lances
-                    como <em>01 - 22,00</em>. Se um status periódico foi definido,
-                    o bot reenvia a lista automaticamente.
+                    {listStarted
+                      ? 'A lista já está em andamento no WhatsApp. Cadastre novos itens e clique em "Atualizar Lista" para reenviar a lista atualizada — os lances já feitos são mantidos.'
+                      : 'Abre um leilão simultâneo por item. Os participantes dão lances como 01 - 22,00. Se um status periódico foi definido, o bot reenvia a lista automaticamente.'}
                   </p>
                 </div>
                 {selectedEvent.periodicStatusMinutes ? (
@@ -800,11 +767,16 @@ export function AuctionsPage() {
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (!selectedEventId) return;
-                    if (!listGroupId) {
+                    if (!listStarted && !listGroupId) {
                       setListError('Selecione um grupo para abrir a lista.');
                       return;
                     }
-                    startList.mutate({ eventId: selectedEventId, groupId: listGroupId });
+                    startList.mutate({
+                      eventId: selectedEventId,
+                      groupId: listStarted
+                        ? listGroupId || selectedEvent.groupId || ''
+                        : listGroupId,
+                    });
                   }}
                   className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"
                 >
@@ -812,9 +784,10 @@ export function AuctionsPage() {
                     <Label htmlFor="list-group">Grupo do WhatsApp</Label>
                     <select
                       id="list-group"
-                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
                       value={listGroupId}
                       onChange={(event) => setListGroupId(event.target.value)}
+                      disabled={listStarted}
                     >
                       <option value="" disabled>
                         Selecione um grupo
@@ -826,6 +799,11 @@ export function AuctionsPage() {
                         </option>
                       ))}
                     </select>
+                    {listStarted && (
+                      <p className="text-xs text-muted-foreground">
+                        A lista já está vinculada a um grupo do WhatsApp.
+                      </p>
+                    )}
                   </div>
                   <Button
                     type="submit"
@@ -833,16 +811,25 @@ export function AuctionsPage() {
                       startList.isPending ||
                       selectedEvent.status === 'CLOSED' ||
                       (selectedEvent.itemCount ?? 0) === 0 ||
-                      (!!listGroupId &&
+                      (!listStarted &&
+                        !!listGroupId &&
                         !groups.data?.some((g) => g.id === listGroupId && !g.openAuction))
                     }
                   >
                     {startList.isPending ? (
                       <Loader2 className="animate-spin" />
+                    ) : listStarted ? (
+                      <RefreshCw className="size-4" />
                     ) : (
                       <ListChecks className="size-4" />
                     )}
-                    {startList.isPending ? 'Abrindo...' : 'Iniciar lista'}
+                    {startList.isPending
+                      ? listStarted
+                        ? 'Atualizando...'
+                        : 'Abrindo...'
+                      : listStarted
+                        ? 'Atualizar Lista'
+                        : 'Iniciar lista'}
                   </Button>
                 </form>
               )}
@@ -874,49 +861,6 @@ export function AuctionsPage() {
                     placeholder="Ex.: Frango assado"
                     required
                   />
-                </div>
-                <div className="space-y-2">
-                  <Label>Foto do item</Label>
-                  <div className="flex items-center gap-3">
-                    {itemImageUrl ? (
-                      <div className="relative">
-                        <img
-                          src={itemImageUrl}
-                          alt="Pré-visualização"
-                          className="size-14 rounded-md border object-cover"
-                        />
-                        <button
-                          type="button"
-                          aria-label="Remover foto"
-                          className="absolute -right-2 -top-2 rounded-full bg-background p-0.5 text-muted-foreground shadow"
-                          onClick={() => setItemImageUrl(null)}
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex size-14 items-center justify-center rounded-md border bg-muted">
-                        <ImagePlus className="size-6 text-muted-foreground" />
-                      </div>
-                    )}
-                    <label
-                      className={`inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors hover:bg-accent ${uploadImage.isPending ? 'pointer-events-none opacity-60' : ''}`}
-                    >
-                      {uploadImage.isPending ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <ImagePlus className="size-4" />
-                      )}
-                      {uploadImage.isPending ? 'Enviando...' : 'Enviar foto'}
-                      <input
-                        type="file"
-                        accept={ACCEPTED_IMAGE_TYPES.join(',')}
-                        className="hidden"
-                        onChange={handleFileSelected}
-                        disabled={uploadImage.isPending}
-                      />
-                    </label>
-                  </div>
                 </div>
                 <div className="space-y-2 sm:col-span-2">
                   <Label htmlFor="item-description">Descrição (opcional)</Label>
@@ -1287,7 +1231,7 @@ export function AuctionsPage() {
                     </CardContent>
                   </Card>
                 ) : (
-                  <p className="mb-4 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                  <p className="mb-4 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                     {filteredReportRows.length === 0
                       ? 'Nenhum item selecionado.'
                       : reportPaymentFilter === 'ALL'
