@@ -9,8 +9,9 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Group } from '@prisma/client';
+import { Group, Role } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
 import { CreateGroupDto, ListGroupsQueryDto, UpdateGroupDto } from './dto/group.dto';
 import { GroupsService } from './groups.service';
@@ -22,12 +23,14 @@ export class GroupsController {
   constructor(private readonly groupsService: GroupsService) {}
 
   @Post()
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Vincula um grupo do WhatsApp ao tenant' })
   create(@CurrentUser() user: RequestUser, @Body() dto: CreateGroupDto): Promise<Group> {
-    return this.groupsService.create(user.tenantId, dto);
+    return this.groupsService.create(user.tenantId, dto, user.role);
   }
 
   @Post('link-code')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Gera um código para vincular grupo pelo WhatsApp' })
   linkCode(@CurrentUser() user: RequestUser) {
     return this.groupsService.generateLinkCode(user.tenantId);
@@ -46,6 +49,7 @@ export class GroupsController {
   }
 
   @Patch(':id')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Atualiza um grupo' })
   update(
     @CurrentUser() user: RequestUser,
@@ -56,6 +60,7 @@ export class GroupsController {
   }
 
   @Delete(':id')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Remove um grupo' })
   async remove(
     @CurrentUser() user: RequestUser,

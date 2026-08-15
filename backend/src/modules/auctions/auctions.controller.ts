@@ -1,7 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Auction } from '@prisma/client';
+import { Auction, Role } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
 import { AuctionsService } from './auctions.service';
 import { ListAuctionsQueryDto, StartAuctionDto, UpdatePaymentStatusDto } from './dto/auction.dto';
@@ -13,6 +14,7 @@ export class AuctionsController {
   constructor(private readonly auctionsService: AuctionsService) {}
 
   @Post()
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Inicia um novo leilão em um grupo' })
   start(
     @CurrentUser() user: RequestUser,
@@ -21,6 +23,7 @@ export class AuctionsController {
     return this.auctionsService.startAuction(user.tenantId, {
       ...dto,
       startedBy: user.id,
+      actorRole: user.role,
     });
   }
 
@@ -34,6 +37,7 @@ export class AuctionsController {
   }
 
   @Delete()
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Limpa o histórico, removendo todos os leilões' })
   clear(@CurrentUser() user: RequestUser) {
     return this.auctionsService.clearHistory(user.tenantId);
@@ -65,6 +69,7 @@ export class AuctionsController {
   }
 
   @Post(':id/close')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Encerra um leilão manualmente' })
   close(
     @CurrentUser() user: RequestUser,
@@ -74,6 +79,7 @@ export class AuctionsController {
   }
 
   @Post(':id/cancel')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Cancela um leilão aberto' })
   cancel(
     @CurrentUser() user: RequestUser,
@@ -83,6 +89,7 @@ export class AuctionsController {
   }
 
   @Patch(':id/payment-status')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Atualiza o status de pagamento do leilão' })
   updatePaymentStatus(
     @CurrentUser() user: RequestUser,

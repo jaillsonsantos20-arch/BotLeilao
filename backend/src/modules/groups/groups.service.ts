@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
-import { Group } from '@prisma/client';
+import { Group, Role } from '@prisma/client';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../common/database/prisma.service';
+import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { CreateGroupDto, UpdateGroupDto } from './dto/group.dto';
 
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
@@ -13,7 +14,10 @@ export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
  */
 @Injectable()
 export class GroupsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly planLimits: PlanLimitsService,
+  ) {}
 
   /** tenantId -> código de vinculação ativo (validade curta) */
   private readonly linkCodes = new Map<
@@ -48,7 +52,9 @@ export class GroupsService {
     return entry.code.toUpperCase() === code.trim().toUpperCase();
   }
 
-  async create(tenantId: string, dto: CreateGroupDto): Promise<Group> {
+  async create(tenantId: string, dto: CreateGroupDto, actorRole: Role): Promise<Group> {
+    await this.planLimits.assertCanCreateGroup(tenantId, actorRole);
+
     return this.prisma.group.create({
       data: {
         tenantId,

@@ -5,10 +5,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Auction, AuctionStatus, AuditAction, Bid, ItemStatus, PaymentStatus, Prisma } from '@prisma/client';
+import { Auction, AuctionStatus, AuditAction, Bid, ItemStatus, PaymentStatus, Prisma, Role } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../common/database/prisma.service';
 import { AuditService } from '../../common/services/audit.service';
+import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PlaceBidInput, StartAuctionInput } from './auction.types';
 
@@ -29,6 +30,7 @@ export class AuctionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async startAuction(tenantId: string, input: StartAuctionInput): Promise<Auction> {
@@ -38,6 +40,9 @@ export class AuctionsService {
     if (input.durationSeconds < 10) {
       throw new BadRequestException('A duração mínima do leilão é de 10 segundos.');
     }
+
+    // undefined (chamadas do bot/engine) => limite aplicado; SUPER_ADMIN não é limitado.
+    await this.planLimits.assertCanStartAuction(tenantId, input.actorRole ?? Role.USER);
 
     const group = await this.prisma.group.findFirst({
       where: { id: input.groupId, tenantId, isActive: true },
@@ -188,6 +193,15 @@ export class AuctionsService {
     reason: 'auto' | 'manual' = 'auto',
   ): Promise<Auction> {
     return this.prisma.$transaction(async (tx) => {
+      // Lock FOR UPDATE evita TOCTOU entre o scheduler (auto-close), o painel
+      // (manual) e um lance concorrente: apenas uma transação encerra o leilão.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Auction" WHERE id = ${auctionId} FOR UPDATE
+      `;
+      if (locked.length === 0) {
+        throw new NotFoundException('Leilão não encontrado.');
+      }
+
       const auction = await tx.auction.findFirst({
         where: { id: auctionId, tenantId },
         include: { bids: { where: { isCurrentLeader: true } } },
@@ -239,6 +253,15 @@ export class AuctionsService {
    */
   async cancelAuction(auctionId: string, tenantId: string): Promise<Auction> {
     return this.prisma.$transaction(async (tx) => {
+      // Lock FOR UPDATE evita TOCTOU: um encerramento (auto) não pode correr
+      // junto com um cancelamento manual sem que um deles espere o outro.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Auction" WHERE id = ${auctionId} FOR UPDATE
+      `;
+      if (locked.length === 0) {
+        throw new NotFoundException('Leilão não encontrado.');
+      }
+
       const auction = await tx.auction.findFirst({ where: { id: auctionId, tenantId } });
       if (!auction) {
         throw new NotFoundException('Leilão não encontrado.');

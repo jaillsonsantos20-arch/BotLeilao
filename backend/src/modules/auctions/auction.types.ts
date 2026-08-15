@@ -1,3 +1,5 @@
+import { Role } from '@prisma/client';
+
 export interface StartAuctionInput {
   groupId: string;
   productName: string;
@@ -6,6 +8,8 @@ export interface StartAuctionInput {
   itemId?: string;
   auctionEventId?: string;
   startedBy?: string;
+  /** Papel do ator. undefined = chamada do bot/engine (limite é aplicado). */
+  actorRole?: Role;
 }
 
 export interface PlaceBidInput {

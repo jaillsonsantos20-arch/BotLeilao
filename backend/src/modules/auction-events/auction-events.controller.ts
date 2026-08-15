@@ -8,7 +8,9 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Role } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
 import { AuctionEngine } from '../whatsapp/auction.engine';
 import { AuctionEventsService } from './auction-events.service';
@@ -24,6 +26,7 @@ export class AuctionEventsController {
   ) {}
 
   @Post()
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Cria um novo leilão (evento) para agrupar itens' })
   create(@CurrentUser() user: RequestUser, @Body() dto: CreateAuctionEventDto) {
     return this.auctionEventsService.create(user.tenantId, dto);
@@ -54,7 +57,8 @@ export class AuctionEventsController {
   }
 
   @Post(':id/start')
-  @ApiOperation({ summary: 'Abre a lista do leilão em um grupo (um leilão por item)' })
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Abre a lista do leilão em um grupo (um leilão por item) ou reenvia a lista atualizada' })
   async start(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -64,6 +68,7 @@ export class AuctionEventsController {
   }
 
   @Post(':id/items/:auctionId/close')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Encerra um item específico da lista' })
   closeItem(
     @CurrentUser() user: RequestUser,
@@ -74,6 +79,7 @@ export class AuctionEventsController {
   }
 
   @Patch(':id')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Atualiza o nome, descrição, grupo ou intervalo do status' })
   update(
     @CurrentUser() user: RequestUser,
@@ -84,12 +90,14 @@ export class AuctionEventsController {
   }
 
   @Post(':id/close')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Encerra a lista (fecha todos os itens abertos)' })
   close(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.auctionEngine.closeEventGroups(user.tenantId, id);
   }
 
   @Delete(':id')
+  @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Remove um leilão (evento) sem leilões realizados' })
   async remove(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     await this.auctionEventsService.remove(user.tenantId, id);

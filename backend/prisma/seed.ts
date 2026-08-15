@@ -25,9 +25,24 @@ async function main(): Promise<void> {
       name: 'Básico',
       description: 'Para pequenos grupos iniciarem nas vendas por leilão.',
       price: 49.9,
-      maxGroups: 5,
+      maxGroups: 2,
       maxUsers: 1,
-      features: ['whatsapp', 'relatorios'],
+      features: ['whatsapp'],
+      status: PlanStatus.ACTIVE,
+    },
+  });
+
+  await prisma.plan.upsert({
+    where: { id: 'plan-profissional' },
+    update: {},
+    create: {
+      id: 'plan-profissional',
+      name: 'Profissional',
+      description: 'Para operações em crescimento, com mais grupos e usuários.',
+      price: 99.9,
+      maxGroups: 5,
+      maxUsers: 2,
+      features: ['whatsapp', 'relatorios', 'listas'],
       status: PlanStatus.ACTIVE,
     },
   });

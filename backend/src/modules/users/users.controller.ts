@@ -17,7 +17,7 @@ export class UsersController {
   @Post()
   @ApiOperation({ summary: 'Cria um usuário no tenant' })
   create(@CurrentUser() user: RequestUser, @Body() dto: CreateUserDto) {
-    return this.usersService.create(user.tenantId, dto);
+    return this.usersService.create(user.tenantId, dto, user.role);
   }
 
   @Get()

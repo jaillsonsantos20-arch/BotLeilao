@@ -7,7 +7,23 @@ import { Role, User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../common/database/prisma.service';
+import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
+
+type UserSummary = Pick<
+  User,
+  | 'id'
+  | 'tenantId'
+  | 'name'
+  | 'email'
+  | 'role'
+  | 'isActive'
+  | 'emailVerifiedAt'
+  | 'totpEnabled'
+  | 'lastLoginAt'
+  | 'createdAt'
+  | 'updatedAt'
+>;
 
 /**
  * Gestão de usuários do tenant.
@@ -18,9 +34,22 @@ import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
  */
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly planLimits: PlanLimitsService,
+  ) {}
 
-  async create(tenantId: string, dto: CreateUserDto): Promise<Omit<User, 'password'>> {
+  async create(
+    tenantId: string,
+    dto: CreateUserDto,
+    actorRole: Role,
+  ): Promise<Omit<User, 'password'>> {
+    if (dto.role === Role.SUPER_ADMIN && actorRole !== Role.SUPER_ADMIN) {
+      throw new BadRequestException('Apenas a plataforma pode conceder SUPER_ADMIN.');
+    }
+
+    await this.planLimits.assertCanCreateUser(tenantId, actorRole);
+
     const user = await this.prisma.user.create({
       data: {
         tenantId,
@@ -37,7 +66,7 @@ export class UsersService {
   async list(
     tenantId: string,
     params: { page?: number; limit?: number },
-  ): Promise<PaginatedResult<Omit<User, 'password'>>> {
+  ): Promise<PaginatedResult<UserSummary>> {
     const page = params.page ?? 1;
     const limit = params.limit ?? 20;
 
@@ -51,6 +80,8 @@ export class UsersService {
           email: true,
           role: true,
           isActive: true,
+          emailVerifiedAt: true,
+          totpEnabled: true,
           lastLoginAt: true,
           createdAt: true,
           updatedAt: true,
