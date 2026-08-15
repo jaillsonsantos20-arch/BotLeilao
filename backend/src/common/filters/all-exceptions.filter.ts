@@ -5,6 +5,7 @@ export interface ApiErrorBody {
   statusCode: number;
   message: string | string[];
   error: string;
+  code?: string;
   path: string;
   timestamp: string;
 }
@@ -27,6 +28,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: string | string[] = 'Erro interno do servidor';
     let error = 'Internal Server Error';
+    let code: string | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -39,10 +41,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
         const cast = body as Record<string, unknown>;
         message = (cast.message as string | string[]) ?? exception.message;
         error = (cast.error as string) ?? exception.name;
+        code = cast.code as string | undefined;
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
-      error = exception.name;
+      const isProduction = process.env.NODE_ENV === 'production';
+      // Não vazar mensagens internas (Prisma, provedores, etc.) para o cliente.
+      message = isProduction ? 'Erro interno do servidor' : exception.message;
+      error = isProduction ? 'Internal Server Error' : exception.name;
       this.logger.error(
         `${request.method} ${request.url} -> ${exception.message}`,
         exception.stack,
@@ -54,6 +59,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       statusCode,
       message,
       error,
+      ...(code !== undefined ? { code } : {}),
       path: request.url,
       timestamp: new Date().toISOString(),
     };

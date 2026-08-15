@@ -150,7 +150,10 @@ export class ReportsService {
   toCsv(headers: string[], rows: readonly unknown[]): string {
     const escape = (value: unknown): string => {
       const str = value === null || value === undefined ? '' : String(value);
-      return `"${str.replace(/"/g, '""')}"`;
+      // Neutraliza fórmulas do Excel/LibreOffice: células que começam com
+      // =, +, -, @ ou tab recebem apóstrofo para não serem interpretadas.
+      const safe = /^[=+\-@\t]/.test(str) ? `'${str}` : str;
+      return `"${safe.replace(/"/g, '""')}"`;
     };
 
     const headerLine = headers.map(escape).join(';');

@@ -49,7 +49,11 @@ function buildService(overrides: { auction?: unknown; maxBid?: Decimal | null } 
 
   const audit = { record: jest.fn().mockResolvedValue(undefined) } as never;
 
-  return { service: new AuctionsService(prisma, audit), tx };
+  const planLimits = {
+    assertCanStartAuction: jest.fn().mockResolvedValue(undefined),
+  } as never;
+
+  return { service: new AuctionsService(prisma, audit, planLimits), tx };
 }
 
 describe('AuctionsService.placeBid', () => {
@@ -129,7 +133,8 @@ describe('AuctionsService.startAuction', () => {
   it('rejeita valor inicial zero', async () => {
     const prisma = {} as never;
     const audit = { record: jest.fn() } as never;
-    const service = new AuctionsService(prisma, audit);
+    const planLimits = { assertCanStartAuction: jest.fn().mockResolvedValue(undefined) } as never;
+    const service = new AuctionsService(prisma, audit, planLimits);
 
     await expect(
       service.startAuction('tenant-1', {
@@ -144,7 +149,8 @@ describe('AuctionsService.startAuction', () => {
   it('rejeita duração abaixo do mínimo', async () => {
     const prisma = {} as never;
     const audit = { record: jest.fn() } as never;
-    const service = new AuctionsService(prisma, audit);
+    const planLimits = { assertCanStartAuction: jest.fn().mockResolvedValue(undefined) } as never;
+    const service = new AuctionsService(prisma, audit, planLimits);
 
     await expect(
       service.startAuction('tenant-1', {

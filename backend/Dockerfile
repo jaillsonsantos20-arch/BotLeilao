@@ -40,6 +40,12 @@ COPY prisma ./prisma
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
+# Executa como usuário não-root (segurança). O entrypoint corrige o dono dos
+# volumes montados (sessão WhatsApp/upload) e baixa privilégios para 'node'.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /app/.wwebjs_auth /app/uploads
+
 EXPOSE 3000
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]

@@ -1,5 +1,5 @@
 import { Decimal } from '@prisma/client/runtime/library';
-import { join, sep } from 'path';
+import { resolve, sep } from 'path';
 
 const UPLOADS_URL_PREFIX = '/api/uploads/';
 
@@ -14,11 +14,19 @@ export function imageUrlToLocalPath(
   imageUrl: string | null | undefined,
 ): string | undefined {
   if (!imageUrl || !imageUrl.startsWith(UPLOADS_URL_PREFIX)) return undefined;
+
+  const uploadsDir = resolve(process.cwd(), 'uploads');
   const relative = imageUrl
     .slice(UPLOADS_URL_PREFIX.length)
     .split('/')
     .join(sep);
-  return join(process.cwd(), 'uploads', relative);
+  const resolved = resolve(uploadsDir, relative);
+
+  if (resolved === uploadsDir || !resolved.startsWith(uploadsDir + sep)) {
+    return undefined;
+  }
+
+  return resolved;
 }
 
 /**
