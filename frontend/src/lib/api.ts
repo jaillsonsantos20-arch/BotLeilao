@@ -28,6 +28,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const original = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
+    const url = original?.url ?? '';
+
+    // Sessão opcional (ex.: GET /auth/me no boot): 401 aqui só significa
+    // "visitante anônimo" e não deve expulsar landing/páginas públicas ao login.
+    if (url.includes('/auth/me')) {
+      return Promise.reject(error);
+    }
 
     if (error.response?.status !== 401 || !original || original._retried) {
       if (error.response?.status === 401) {
