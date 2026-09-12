@@ -8,7 +8,7 @@ import { PrismaService } from '../../common/database/prisma.service';
 import { AuctionEngine } from './auction.engine';
 import { CommandRouter } from './command-handler';
 import { WhatsAppGroupContext } from './whatsapp.types';
-import { WHATSAPP_RECOVERY_COOLDOWN_MS } from './whatsapp.constants';
+import { WHATSAPP_CONNECT_TIMEOUT_MS, WHATSAPP_RECOVERY_COOLDOWN_MS } from './whatsapp.constants';
 
 /**
  * Gerencia os clientes do WhatsApp (um por tenant) com LocalAuth.
@@ -34,6 +34,11 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
   /** tenantId -> timestamp da última recuperação (evita loops) */
   private readonly lastRecoveryAt = new Map<string, number>();
+
+  /** tenantId -> timestamp do início da tentativa de conexão atual */
+  private readonly clientAttemptAt = new Map<string, number>();
+
+  private watchdogTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -64,13 +69,46 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Reconectando sessão do tenant ${session.tenantId}...`);
       this.createClient(session.tenantId, session.clientId);
     }
+
+    // Watchdog: recria o cliente se ficar preso em CONNECTING (o evento "ready"
+    // do whatsapp-web.js às vezes nunca dispara após o "authenticated").
+    this.watchdogTimer = setInterval(() => void this.watchConnectingClients(), 30000);
   }
 
   onModuleDestroy(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     for (const [, client] of this.clients) {
       client.destroy().catch(() => undefined);
     }
     this.clients.clear();
+  }
+
+  /**
+   * Recria clientes que permanecem em CONNECTING além do tempo limite.
+   */
+  private async watchConnectingClients(): Promise<void> {
+    const now = Date.now();
+    for (const [tenantId, startedAt] of this.clientAttemptAt) {
+      if (!this.clients.has(tenantId)) {
+        this.clientAttemptAt.delete(tenantId);
+        continue;
+      }
+      if (now - startedAt < WHATSAPP_CONNECT_TIMEOUT_MS) continue;
+
+      const session = await this.prisma.whatsAppSession.findUnique({
+        where: { clientId: `tenant-${tenantId}` },
+        select: { status: true },
+      });
+      if (session?.status !== SessionStatus.CONNECTING) {
+        this.clientAttemptAt.delete(tenantId);
+        continue;
+      }
+
+      this.logger.warn(
+        `WhatsApp do tenant ${tenantId} preso em CONNECTING há ${Math.round((now - startedAt) / 1000)}s — recriando cliente.`,
+      );
+      await this.connect(tenantId);
+    }
   }
 
   /**
@@ -109,30 +147,36 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Conecta (ou reconecta) o WhatsApp de um tenant.
-   * O QR Code é exibido no terminal do processo.
+   * O QR Code é emitido no evento "qr" e exposto via getLatestQr().
    */
   async connect(tenantId: string): Promise<{ status: SessionStatus }> {
     const existing = this.clients.get(tenantId);
     if (existing) {
       const { status } = await this.sessionStatus(tenantId);
 
-      // Cliente preso em memória sem pareamento ativo (ex.: browser morreu e o
-      // evento "disconnected" não disparou). Destrói e recria para gerar QR novo.
-      if (status === SessionStatus.ERROR || status === SessionStatus.DISCONNECTED) {
-        this.logger.warn(
-          `Cliente ${tenantId} preso em ${status} — recriando para gerar QR novo.`,
-        );
-        await existing.destroy().catch(() => undefined);
-        this.clients.delete(tenantId);
-        this.latestQr.delete(tenantId);
-      } else {
+      // Sessão saudável: não mexe (evita invalidar um QR que o usuário pode
+      // estar escaneando agora).
+      if (status === SessionStatus.CONNECTED) {
         return { status };
       }
-    }
+      if (status === SessionStatus.CONNECTING && this.latestQr.has(tenantId)) {
+        return { status };
+      }
 
-    const session = await this.prisma.whatsAppSession.upsert({
+      // Cliente travado (ERROR/DISCONNECTED ou CONNECTING sem QR emitido):
+      // destrói e recria para forçar a emissão de um QR novo.
+      this.logger.warn(
+        `Cliente ${tenantId} em ${status} sem QR utilizável — recriando para gerar QR novo.`,
+      );
+      await existing.destroy().catch(() => undefined);
+      this.clients.delete(tenantId);
+      this.clientAttemptAt.delete(tenantId);
+    }
+    this.latestQr.delete(tenantId);
+
+    await this.prisma.whatsAppSession.upsert({
       where: { clientId: `tenant-${tenantId}` },
-      update: {},
+      update: { status: SessionStatus.CONNECTING, lastError: null },
       create: {
         tenantId,
         clientId: `tenant-${tenantId}`,
@@ -140,7 +184,10 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    this.createClient(tenantId, session.clientId);
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: { clientId: `tenant-${tenantId}` },
+    });
+    this.createClient(tenantId, session?.clientId ?? `tenant-${tenantId}`);
     return { status: SessionStatus.CONNECTING };
   }
 
@@ -150,6 +197,8 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       await client.destroy().catch(() => undefined);
       this.clients.delete(tenantId);
     }
+    this.clientAttemptAt.delete(tenantId);
+    this.latestQr.delete(tenantId);
     await this.prisma.whatsAppSession.updateMany({
       where: { tenantId },
       data: { status: SessionStatus.DISCONNECTED, lastError: null },
@@ -272,6 +321,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       status: SessionStatus.CONNECTING,
       lastError: null,
     });
+    this.clientAttemptAt.set(tenantId, Date.now());
 
     const browserPath = process.env.WHATSAPP_BROWSER_PATH;
     const client = new Client({
@@ -287,17 +337,34 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         ],
       },
       qrMaxRetries: 10,
+      // O container roda como usuário não-root e não tem permissão de gravar
+      // "./.wwebjs_cache/" (EACCES). O erro é engolido dentro do fork e o evento
+      // "ready" nunca dispara, deixando o status preso em CONNECTING. Sem cache
+      // local, o bundle do WhatsApp Web é buscado da web a cada inicialização.
+      webVersionCache: { type: 'none' },
     });
 
     this.clients.set(tenantId, client);
 
     client.on('qr', (qr) => {
+      this.logger.log(`QR Code gerado para o tenant ${tenantId} — escaneie no painel.`);
       qrcode.generate(qr, { small: true });
       this.latestQr.set(tenantId, qr);
+      this.clientAttemptAt.set(tenantId, Date.now());
       void this.persistSession(tenantId, {
         status: SessionStatus.CONNECTING,
         lastQrAt: new Date(),
       });
+    });
+
+    client.on('loading_screen', (percent, message) => {
+      this.logger.debug(`WhatsApp carregando (tenant ${tenantId}): ${percent}% ${message}`);
+    });
+
+    // Evento emitido a cada troca de estado da conexão — ajuda a diagnosticar
+    // o caso "clicou em Conectar e o QR nunca aparece".
+    client.on('change_state', (state) => {
+      this.logger.debug(`WhatsApp change_state (tenant ${tenantId}): ${String(state)}`);
     });
 
     client.on('authenticated', () => {
@@ -306,6 +373,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
     client.on('ready', async () => {
       this.logger.log(`WhatsApp conectado para o tenant ${tenantId}.`);
+      this.clientAttemptAt.delete(tenantId);
       await this.persistSession(tenantId, {
         status: SessionStatus.CONNECTED,
         lastConnectedAt: new Date(),
@@ -315,6 +383,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
     client.on('auth_failure', (message) => {
       this.logger.error(`Falha de autenticação (tenant ${tenantId}): ${message}`);
+      this.clientAttemptAt.delete(tenantId);
       void this.persistSession(tenantId, {
         status: SessionStatus.ERROR,
         lastError: `auth_failure: ${message}`,
@@ -323,6 +392,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
     client.on('disconnected', async (reason) => {
       this.logger.warn(`WhatsApp desconectado (tenant ${tenantId}): ${reason}`);
+      this.clientAttemptAt.delete(tenantId);
       await this.persistSession(tenantId, {
         status: SessionStatus.DISCONNECTED,
         lastError: `disconnected: ${reason}`,
@@ -348,6 +418,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
       this.logger.error(
         `Falha ao inicializar WhatsApp do tenant ${tenantId}: ${(error as Error).message}`,
       );
+      this.clientAttemptAt.delete(tenantId);
       void this.persistSession(tenantId, {
         status: SessionStatus.ERROR,
         lastError: (error as Error).message,

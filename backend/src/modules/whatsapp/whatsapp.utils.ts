@@ -42,6 +42,18 @@ export function formatCurrency(value: Decimal | number | string): string {
 }
 
 /**
+ * Formata data/hora no padrão brasileiro para mensagens do bot: 18/08, 18:30.
+ */
+export function formatDateTimeBR(date: Date): string {
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/**
  * Interpreta o valor digitado no WhatsApp como número.
  * Aceita: "150", "150,00", "R$ 150", "1.500,00".
  */

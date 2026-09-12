@@ -1,7 +1,9 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -12,15 +14,17 @@ import { GroupsService } from '../groups/groups.service';
 import { PrismaService } from '../../common/database/prisma.service';
 import {
   WHATSAPP_DB_SWEEP_INTERVAL_MS,
-  WHATSAPP_DEFAULT_DURATION_SECONDS,
+  WHATSAPP_DEFAULT_DURATION_MINUTES,
   WHATSAPP_LIST_STATUS_INTERVAL_MS,
-  WHATSAPP_MIN_DURATION_SECONDS,
+  WHATSAPP_MAX_DURATION_MINUTES,
+  WHATSAPP_MIN_DURATION_MINUTES,
   WHATSAPP_TICK_INTERVAL_MS,
   WHATSAPP_WARNING_FIRST_SECONDS,
   WHATSAPP_WARNING_SECOND_SECONDS,
+  WHATSAPP_WARNING_THIRD_SECONDS,
 } from './whatsapp.constants';
-import { formatCurrency, imageUrlToLocalPath, parseAmount } from './whatsapp.utils';
-import { ActiveAuctionMemory, ActiveListMemory, AuctionSetupState, ListAuctionEntry, WhatsAppGroupContext } from './whatsapp.types';
+import { formatCurrency, formatDateTimeBR, imageUrlToLocalPath, parseAmount } from './whatsapp.utils';
+import { ActiveAuctionMemory, ActiveListMemory, AuctionSetupState, ListAuctionEntry, ScheduledEventMemory, WhatsAppGroupContext } from './whatsapp.types';
 
 export type MessageSender = (
   tenantId: string,
@@ -62,6 +66,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /** whatsappGroupId -> lista (evento) ativa em memória */
   private readonly listGroups = new Map<string, ActiveListMemory>();
 
+  /** eventId -> evento agendado (controle de alertas de fim) */
+  private readonly scheduledEvents = new Map<string, ScheduledEventMemory>();
+
   /** assinantes para envio de mensagens (desacopla o transporte) */
   private readonly subscribers = new Set<MessageSender>();
 
@@ -94,10 +101,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       () => void this.sweepExpiredFromDb(),
       WHATSAPP_DB_SWEEP_INTERVAL_MS,
     );
-    this.statusTimer = setInterval(
-      () => this.tickListStatus(),
-      WHATSAPP_LIST_STATUS_INTERVAL_MS,
-    );
+    this.statusTimer = setInterval(() => {
+      void this.tickListStatus();
+      void this.tickScheduledEvents();
+    }, WHATSAPP_LIST_STATUS_INTERVAL_MS);
     this.logger.log(
       `Motor de leilões iniciado com ${this.active.size} leilão(ões) e ${this.listGroups.size} lista(s) recuperado(s).`,
     );
@@ -124,6 +131,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         groupId: true,
         productName: true,
         itemId: true,
+        durationSeconds: true,
         endsAt: true,
         group: { select: { whatsappGroupId: true } },
       },
@@ -140,7 +148,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         groupId: whatsappGroupId,
         productName: auction.productName,
         itemId: auction.itemId,
+        durationSeconds: auction.durationSeconds,
         endsAt: auction.endsAt,
+        warnedThree: remainingSeconds <= WHATSAPP_WARNING_THIRD_SECONDS,
         warnedFirst: remainingSeconds <= WHATSAPP_WARNING_FIRST_SECONDS,
         warnedSecond: remainingSeconds <= WHATSAPP_WARNING_SECOND_SECONDS,
         closed: false,
@@ -157,7 +167,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       select: {
         groupId: true,
         tenantId: true,
-        auctionEvent: { select: { id: true, name: true, periodicStatusMinutes: true } },
+        auctionEvent: {
+          select: {
+            id: true,
+            name: true,
+            periodicStatusMinutes: true,
+            scheduledStartAt: true,
+            scheduledEndAt: true,
+          },
+        },
       },
     });
 
@@ -180,6 +198,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         eventName: row.auctionEvent.name,
         periodicStatusMinutes: row.auctionEvent.periodicStatusMinutes ?? 0,
         lastStatusAt: Date.now(),
+        scheduledStartAt: row.auctionEvent.scheduledStartAt ?? null,
+        scheduledEndAt: row.auctionEvent.scheduledEndAt ?? null,
+        warnedThreeByAuction: new Map(),
+        warnedEventEndsAt: null,
       });
     }
   }
@@ -307,7 +329,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           durationSeconds: item.durationSeconds,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
-          endsAt: new Date(Date.now() + item.durationSeconds * 1000),
+          minBidStep: event.minBidStep ?? null,
+          endsAt:
+            item.durationSeconds > 0
+              ? new Date(Date.now() + item.durationSeconds * 1000)
+              : null,
         },
       });
       await this.prisma.item.update({
@@ -324,6 +350,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       eventName: event.name,
       periodicStatusMinutes: event.periodicStatusMinutes ?? 0,
       lastStatusAt: Date.now(),
+      scheduledStartAt: event.scheduledStartAt ?? null,
+      scheduledEndAt: event.scheduledEndAt ?? null,
+      warnedThreeByAuction: new Map(),
+      warnedEventEndsAt: null,
     };
   }
 
@@ -336,6 +366,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     whatsappGroupId: string;
     auction: Auction;
   }): Promise<void> {
+    // Leilões de lista (itens de um evento) são gerenciados pelo modo lista
+    // (listGroups): não entram no tick, portanto sem avisos "DOU-LHE" nem
+    // encerramento automático — o administrador encerra cada item pelo painel.
+    if (input.auction.auctionEventId) {
+      this.logger.warn(
+        `launchAuction ignorado: leilão ${input.auction.id} pertence a uma lista (evento) e não é gerenciado pelo tick.`,
+      );
+      return;
+    }
     if (this.active.has(input.whatsappGroupId)) {
       throw new ConflictException('Já existe um leilão em andamento neste grupo.');
     }
@@ -349,7 +388,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       groupId: input.whatsappGroupId,
       productName: input.auction.productName,
       itemId: input.auction.itemId,
+      durationSeconds: input.auction.durationSeconds,
       endsAt: input.auction.endsAt,
+      warnedThree: false,
       warnedFirst: false,
       warnedSecond: false,
       closed: false,
@@ -365,7 +406,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         '',
         `📦 Produto: *${input.auction.productName}*`,
         `💰 Valor inicial: *${formatCurrency(input.auction.initialValue)}*`,
-        `⏱️ Tempo: *${input.auction.durationSeconds}s*`,
+        `⏱️ Tempo: *${this.formatDuration(input.auction.durationSeconds)}*`,
         '',
         'Envie o *valor* para dar o primeiro lance! 🚀',
       ].join('\n'),
@@ -456,10 +497,19 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     for (const auction of open) {
       await this.auctionsService.closeAuction(auction.id, tenantId, 'manual');
     }
-    await this.prisma.auctionEvent.updateMany({
-      where: { id: eventId, tenantId },
+
+    // Transição atômica OPEN -> CLOSED: apenas a chamada que efetivamente
+    // encerra o evento (count = 1) anuncia o resumo final. Chamadas repetidas
+    // (duplo clique, agendamento + painel) são ignoradas e não reenviam o
+    // "LEILÃO FINALIZADO".
+    const transition = await this.prisma.auctionEvent.updateMany({
+      where: { id: eventId, tenantId, status: AuctionEventStatus.OPEN },
       data: { status: AuctionEventStatus.CLOSED },
     });
+    if (transition.count === 0) {
+      return { closedCount: open.length };
+    }
+
     const targets = Array.from(this.listGroups.values()).filter(
       (list) => list.eventId === eventId && list.tenantId === tenantId,
     );
@@ -525,6 +575,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         eventName: event.name,
         periodicStatusMinutes: event.periodicStatusMinutes ?? 0,
         lastStatusAt: Date.now(),
+        scheduledStartAt: event.scheduledStartAt ?? null,
+        scheduledEndAt: event.scheduledEndAt ?? null,
+        warnedThreeByAuction: new Map(),
+        warnedEventEndsAt: null,
       };
       this.listGroups.set(list.groupId, list);
     }
@@ -560,6 +614,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     });
     const hasAuctionFor = new Set(auctions.map((auction) => auction.itemId));
 
+    const event = await this.prisma.auctionEvent.findFirst({
+      where: { id: list.eventId, tenantId: list.tenantId },
+      select: { minBidStep: true },
+    });
+
     let created = 0;
     for (const item of items) {
       if (hasAuctionFor.has(item.id)) continue;
@@ -574,7 +633,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           durationSeconds: item.durationSeconds,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
-          endsAt: new Date(Date.now() + item.durationSeconds * 1000),
+          minBidStep: event?.minBidStep ?? null,
+          endsAt:
+            item.durationSeconds > 0
+              ? new Date(Date.now() + item.durationSeconds * 1000)
+              : null,
         },
       });
       await this.prisma.item.update({
@@ -606,6 +669,79 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Agenda (ou remove) o encerramento de um item da lista a partir do painel,
+   * mesmo depois de o leilão já ter iniciado. O prazo fixo passa a valer como
+   * deadline do item (não é mais estendido por lances) e o bot avisa no grupo
+   * que o item será encerrado no horário determinado.
+   */
+  async scheduleListItemEndFromPanel(
+    tenantId: string,
+    eventId: string,
+    auctionId: string,
+    endsAt: string | null,
+  ): Promise<{ itemName: string; scheduledEndAt: Date | null }> {
+    const auction = await this.prisma.auction.findFirst({
+      where: { id: auctionId, tenantId, auctionEventId: eventId },
+    });
+    if (!auction) {
+      throw new NotFoundException('Item em leilão não encontrado.');
+    }
+    if (auction.status !== AuctionStatus.OPEN) {
+      throw new ConflictException('Este item não está mais em leilão.');
+    }
+    if (!auction.itemId) {
+      throw new BadRequestException('Este leilão não está vinculado a um item da lista.');
+    }
+
+    const now = Date.now();
+    const data: Prisma.AuctionUpdateInput = {};
+    if (endsAt) {
+      const date = new Date(endsAt);
+      if (Number.isNaN(date.getTime())) {
+        throw new BadRequestException('Data de encerramento inválida.');
+      }
+      if (date.getTime() <= now) {
+        throw new BadRequestException('A data de encerramento deve ser futura.');
+      }
+      const remainingSeconds = Math.max(1, Math.round((date.getTime() - now) / 1000));
+      data.scheduledEndAt = date;
+      data.endsAt = date;
+      data.durationSeconds = remainingSeconds;
+    } else {
+      // Remove o agendamento e restaura o comportamento original do item.
+      const item = await this.prisma.item.findUnique({ where: { id: auction.itemId } });
+      const durationSeconds = item?.durationSeconds ?? 0;
+      data.scheduledEndAt = null;
+      data.durationSeconds = durationSeconds;
+      data.endsAt =
+        durationSeconds > 0 ? new Date(now + durationSeconds * 1000) : null;
+    }
+
+    const updated = await this.prisma.auction.update({ where: { id: auction.id }, data });
+
+    const list = this.findListByEvent(eventId, tenantId);
+    if (list) {
+      const message = updated.scheduledEndAt
+        ? [
+            '⏰ *ENCERRAMENTO AGENDADO*',
+            '',
+            `📦 Item: *${updated.productName}*`,
+            `Este item será encerrado automaticamente em *${formatDateTimeBR(updated.scheduledEndAt)}*.`,
+            'Não perca o prazo para o último lance! 🚀',
+          ].join('\n')
+        : [
+            '↩️ *AGENDAMENTO REMOVIDO*',
+            '',
+            `📦 Item: *${updated.productName}*`,
+            'O encerramento automático foi cancelado. Este item fica aberto até ser encerrado manualmente.',
+          ].join('\n');
+      await this.emit(list.tenantId, list.groupId, message);
+    }
+
+    return { itemName: updated.productName, scheduledEndAt: updated.scheduledEndAt };
+  }
+
+  /**
    * Gera o resumo final da lista (após o encerramento): todos os itens,
    * respectivos valores finais e vencedores.
    */
@@ -613,7 +749,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     const rows = await this.listAuctionSnapshot(list);
     const header = `*LEILÃO FINALIZADO*\n*${list.eventName || 'LEILÃO'}*`;
     const body = rows.map((row) => this.itemBlock(row)).join('\n\n');
-    return [header, '', `*FINALIZADO*\n${body}`].join('\n');
+    return [header, '', `*ITENS ARREMATADOS*\n${body}`].join('\n');
   }
 
   /**
@@ -857,7 +993,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         this.setups.set(context.groupId, setup);
         await this.reply(
           context,
-          `💰 Valor inicial: *${formatCurrency(value)}*\n\n⏱️ Qual o *tempo do leilão* em segundos? (padrão: ${WHATSAPP_DEFAULT_DURATION_SECONDS}s)`,
+          `💰 Valor inicial: *${formatCurrency(value)}*\n\n⏱️ Qual o *tempo do leilão* em minutos? (padrão: ${WHATSAPP_DEFAULT_DURATION_MINUTES})`,
         );
         return;
       }
@@ -866,13 +1002,13 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         const duration = Math.round(Number(input.replace(/\D/g, '')));
         const validDuration =
           Number.isInteger(duration) &&
-          duration >= WHATSAPP_MIN_DURATION_SECONDS &&
-          duration <= 86400;
+          duration >= WHATSAPP_MIN_DURATION_MINUTES &&
+          duration <= WHATSAPP_MAX_DURATION_MINUTES;
 
         if (!validDuration) {
           await this.reply(
             context,
-            `❌ Tempo inválido. Envie segundos entre ${WHATSAPP_MIN_DURATION_SECONDS} e 86400, ex.: *120*`,
+            `❌ Tempo inválido. Envie minutos entre ${WHATSAPP_MIN_DURATION_MINUTES} e ${WHATSAPP_MAX_DURATION_MINUTES}, ex.: *2*`,
           );
           return;
         }
@@ -884,7 +1020,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
             groupId: await this.resolveInternalGroupId(setup.tenantId, context.groupId),
             productName: setup.productName!,
             initialValue: setup.initialValue!,
-            durationSeconds: duration,
+            durationSeconds: duration * 60,
           });
 
           this.active.set(context.groupId, {
@@ -893,7 +1029,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
             groupId: context.groupId,
             productName: auction.productName,
             itemId: auction.itemId,
+            durationSeconds: duration * 60,
             endsAt: auction.endsAt!,
+            warnedThree: false,
             warnedFirst: false,
             warnedSecond: false,
             closed: false,
@@ -906,7 +1044,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
               '',
               `📦 Produto: *${auction.productName}*`,
               `💰 Valor inicial: *${formatCurrency(auction.initialValue)}*`,
-              `⏱️ Tempo: *${duration}s*`,
+              `⏱️ Tempo: *${duration} min*`,
               '',
               'Envie o *valor* para dar o primeiro lance! 🚀',
             ].join('\n'),
@@ -939,6 +1077,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
       // Reinicia o cronômetro e os avisos.
       active.endsAt = auction.endsAt!;
+      active.warnedThree = false;
       active.warnedFirst = false;
       active.warnedSecond = false;
       this.active.set(context.groupId, active);
@@ -965,11 +1104,14 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         auctionEventId: list.eventId,
         itemId: { not: null },
       },
+      orderBy: [{ item: { order: 'asc' } }, { startedAt: 'asc' }],
       select: {
         id: true,
         productName: true,
         status: true,
         initialValue: true,
+        endsAt: true,
+        durationSeconds: true,
         item: {
           select: { order: true, initialValue: true, imageUrl: true },
         },
@@ -989,13 +1131,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const ordered = [...auctions].sort((a, b) => {
-      const oa = a.item?.order ?? 0;
-      const ob = b.item?.order ?? 0;
-      return oa - ob;
-    });
-
-    return ordered.map((auction, index) => {
+    return auctions.map((auction, index) => {
       const leader = auction.bids[0];
       return {
         number: index + 1,
@@ -1007,6 +1143,8 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         leader: leader?.participantName ?? leader?.participantPhone ?? null,
         bidCount: auction._count.bids,
         imageUrl: auction.item?.imageUrl ?? null,
+        endsAt: auction.endsAt ?? new Date(),
+        durationSeconds: auction.durationSeconds,
       };
     });
   }
@@ -1042,7 +1180,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       sections.push(`*EM ANDAMENTO*\n${section(ongoing)}`);
     }
     if (finalized.length > 0) {
-      sections.push(`*FINALIZADO*\n${section(finalized)}`);
+      sections.push(`*ITENS ARREMATADOS*\n${section(finalized)}`);
     }
 
     const howTo =
@@ -1067,11 +1205,18 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       // está em andamento (o valor em memória é atualizado a cada ciclo).
       const event = await this.prisma.auctionEvent.findFirst({
         where: { id: list.eventId, tenantId: list.tenantId },
-        select: { name: true, periodicStatusMinutes: true },
+        select: {
+          name: true,
+          periodicStatusMinutes: true,
+          scheduledStartAt: true,
+          scheduledEndAt: true,
+        },
       });
       if (event) {
         list.eventName = event.name;
         list.periodicStatusMinutes = event.periodicStatusMinutes ?? 0;
+        list.scheduledStartAt = event.scheduledStartAt ?? null;
+        list.scheduledEndAt = event.scheduledEndAt ?? null;
         this.listGroups.set(whatsappGroupId, list);
       }
 
@@ -1084,6 +1229,176 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           this.listGroups.set(whatsappGroupId, list);
           const text = await this.listToText(list);
           await this.emit(list.tenantId, list.groupId, text);
+        }
+      }
+
+      // Tempo por item: alerta "3 min" e encerramento automático quando o prazo esgota.
+      const rows = await this.listAuctionSnapshot(list);
+      let closedAny = false;
+      for (const row of rows) {
+        if (row.status !== AuctionStatus.OPEN) continue;
+        // Sem tempo definido: o item fica aberto até o painel encerrar manualmente.
+        if (row.durationSeconds <= 0) continue;
+
+        const remaining = this.remainingSeconds(row.endsAt);
+        if (remaining <= 0) {
+          await this.closeListEntry(list, row);
+          closedAny = true;
+          list.warnedThreeByAuction.delete(row.auctionId);
+          this.listGroups.set(whatsappGroupId, list);
+          continue;
+        }
+
+        if (
+          row.durationSeconds > WHATSAPP_WARNING_THIRD_SECONDS &&
+          remaining <= WHATSAPP_WARNING_THIRD_SECONDS
+        ) {
+          const warnedAt = list.warnedThreeByAuction.get(row.auctionId);
+          if (!warnedAt || warnedAt.getTime() !== row.endsAt.getTime()) {
+            list.warnedThreeByAuction.set(row.auctionId, row.endsAt);
+            await this.emit(
+              list.tenantId,
+              list.groupId,
+              `⏰ *QUEM DÁ MAIS?*\n*${String(row.number).padStart(2, '0')}* • ${row.name} — este item encerra em 3 minutos.`,
+            );
+          }
+        }
+      }
+
+      // Ao encerrar um item (tempo esgotado), envia apenas a lista completa
+      // atualizada — todos os itens com os últimos lances / vencedores.
+      if (closedAny) {
+        const text = await this.listToText(list);
+        await this.emit(list.tenantId, list.groupId, text);
+      }
+      this.listGroups.set(whatsappGroupId, list);
+    }
+  }
+
+  /**
+   * Encerra um item da lista cujo prazo esgotou.
+   * O anúncio do resultado é feito via lista completa (ver tickListStatus),
+   * sem mensagem individual de "item encerrado".
+   */
+  private async closeListEntry(list: ActiveListMemory, entry: ListAuctionEntry): Promise<void> {
+    try {
+      await this.auctionsService.closeAuction(entry.auctionId, list.tenantId, 'auto');
+    } catch (error) {
+      this.logger.error(
+        `Falha ao encerrar item da lista ${entry.auctionId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Gerencia os eventos com início/término agendados: abre a lista no horário,
+   * alerta 3 minutos antes do término e encerra automaticamente no prazo.
+   */
+  private async tickScheduledEvents(): Promise<void> {
+    const now = new Date();
+    const events = await this.prisma.auctionEvent.findMany({
+      where: {
+        status: AuctionEventStatus.OPEN,
+        OR: [
+          { scheduledStartAt: { not: null } },
+          { scheduledEndAt: { not: null } },
+        ],
+      },
+      include: { group: { select: { id: true, whatsappGroupId: true } } },
+    });
+
+    for (const event of events) {
+      let whatsappGroupId = event.group?.whatsappGroupId ?? null;
+      if (!whatsappGroupId) {
+        whatsappGroupId = this.findListByEvent(event.id, event.tenantId)?.groupId ?? null;
+      }
+
+      // Início automático: abre a lista no grupo quando o horário agendado chega.
+      if (event.scheduledStartAt && event.scheduledStartAt <= now) {
+        const memory = this.scheduledEvents.get(event.id) ?? {
+          eventId: event.id,
+          tenantId: event.tenantId,
+          whatsappGroupId,
+          warnedEventEndsAt: null,
+          autoOpenedStartAt: null,
+        };
+        const alreadyAutoOpened =
+          memory.autoOpenedStartAt?.getTime() === event.scheduledStartAt.getTime();
+
+        if (!alreadyAutoOpened && whatsappGroupId) {
+          const alreadyStarted = await this.prisma.auction.findFirst({
+            where: {
+              tenantId: event.tenantId,
+              auctionEventId: event.id,
+              status: AuctionStatus.OPEN,
+            },
+            select: { id: true },
+          });
+          if (!alreadyStarted) {
+            // Já foi aberto antes (ex.: todos os itens encerrados ou lista
+            // reaberta pelo painel): não reabre nem reanuncia sozinho.
+            const wasOpened = await this.prisma.auction.findFirst({
+              where: { tenantId: event.tenantId, auctionEventId: event.id },
+              select: { id: true },
+            });
+            if (!wasOpened) {
+              try {
+                await this.openListFromPanel(event.tenantId, event.id, event.group?.id ?? '');
+                memory.autoOpenedStartAt = event.scheduledStartAt;
+                this.scheduledEvents.set(event.id, memory);
+                this.logger.log(
+                  `Lista aberta automaticamente (agendamento) — evento ${event.id}.`,
+                );
+              } catch (error) {
+                this.logger.error(
+                  `Falha ao abrir lista agendada ${event.id}: ${(error as Error).message}`,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // Término automático + alerta "terminando em 3 minutos".
+      if (!event.scheduledEndAt) continue;
+
+      const remainingMs = event.scheduledEndAt.getTime() - Date.now();
+      if (remainingMs <= 0) {
+        if (whatsappGroupId) {
+          await this.closeEventGroups(event.tenantId, event.id);
+          this.logger.log(`Leilão encerrado automaticamente (agendamento) — evento ${event.id}.`);
+        }
+        this.scheduledEvents.delete(event.id);
+        continue;
+      }
+
+      if (remainingMs <= WHATSAPP_WARNING_THIRD_SECONDS * 1000 && whatsappGroupId) {
+        const memory = this.scheduledEvents.get(event.id) ?? {
+          eventId: event.id,
+          tenantId: event.tenantId,
+          whatsappGroupId,
+          warnedEventEndsAt: null,
+          autoOpenedStartAt: null,
+        };
+        if (memory.warnedEventEndsAt?.getTime() !== event.scheduledEndAt.getTime()) {
+          // Só alerta se a lista está em andamento (com leilão aberto no grupo).
+          const hasOpen = await this.prisma.auction.findFirst({
+            where: {
+              tenantId: event.tenantId,
+              auctionEventId: event.id,
+              status: AuctionStatus.OPEN,
+            },
+            select: { id: true },
+          });
+          if (hasOpen) {
+            await this.emit(
+              event.tenantId,
+              whatsappGroupId,
+              `⏰ *QUEM DÁ MAIS?*\n*${event.name}* será encerrado automaticamente em 3 minutos.`,
+            );
+          }
+          memory.warnedEventEndsAt = event.scheduledEndAt;
+          this.scheduledEvents.set(event.id, memory);
         }
       }
     }
@@ -1108,6 +1423,16 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       } else if (remaining <= WHATSAPP_WARNING_FIRST_SECONDS && !auction.warnedFirst) {
         auction.warnedFirst = true;
         await this.sendToGroup(auction, '🔔 *DOU-LHE UMA!*');
+      } else if (
+        auction.durationSeconds > WHATSAPP_WARNING_THIRD_SECONDS &&
+        remaining <= WHATSAPP_WARNING_THIRD_SECONDS &&
+        !auction.warnedThree
+      ) {
+        auction.warnedThree = true;
+        await this.sendToGroup(
+          auction,
+          `⏰ *QUEM DÁ MAIS?*\n📦 *${auction.productName}* — restam 3 minutos.`,
+        );
       }
     }
   }
@@ -1210,6 +1535,13 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
   private remainingSeconds(endsAt: Date): number {
     return (endsAt.getTime() - Date.now()) / 1000;
+  }
+
+  private formatDuration(durationSeconds: number): string {
+    if (durationSeconds % 60 === 0) {
+      return `${durationSeconds / 60} min`;
+    }
+    return `${durationSeconds}s`;
   }
 
   private friendlyError(error: unknown): string {

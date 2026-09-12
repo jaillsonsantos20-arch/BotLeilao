@@ -32,7 +32,9 @@ export interface ActiveAuctionMemory {
   groupId: string;
   productName: string;
   itemId: string | null;
+  durationSeconds: number;
   endsAt: Date;
+  warnedThree: boolean;
   warnedFirst: boolean;
   warnedSecond: boolean;
   closed: boolean;
@@ -49,6 +51,24 @@ export interface ActiveListMemory {
   eventName: string;
   periodicStatusMinutes: number;
   lastStatusAt: number;
+  scheduledStartAt?: Date | null;
+  scheduledEndAt?: Date | null;
+  /** auctionId -> endsAt no momento do último alerta "3 min" (re-alerta se o lance reiniciar o cronômetro). */
+  warnedThreeByAuction: Map<string, Date>;
+  /** scheduledEndAt no momento do último alerta "leilão terminando em 3 min". */
+  warnedEventEndsAt: Date | null;
+}
+
+/**
+ * Evento com início/término agendados que ainda não virou lista ativa.
+ * Guarda apenas o suficiente para os alertas de fim (emitidos uma única vez).
+ */
+export interface ScheduledEventMemory {
+  eventId: string;
+  tenantId: string;
+  whatsappGroupId: string | null;
+  warnedEventEndsAt: Date | null;
+  autoOpenedStartAt: Date | null;
 }
 
 /**
@@ -64,4 +84,6 @@ export interface ListAuctionEntry {
   leader: string | null;
   bidCount: number;
   imageUrl: string | null;
+  endsAt: Date;
+  durationSeconds: number;
 }

@@ -39,7 +39,7 @@ const STATUS_CONFIG: Record<
  * Configuração da sessão do WhatsApp (QR Code exibido aqui no painel).
  */
 export function WhatsAppPage() {
-  const { data, isLoading } = useStatus();
+  const { data, isLoading, isError } = useStatus();
   const queryClient = useQueryClient();
   const status = data?.status ?? 'DISCONNECTED';
   const config = STATUS_CONFIG[status];
@@ -47,7 +47,8 @@ export function WhatsAppPage() {
 
   const connect = useMutation({
     mutationFn: async () => {
-      await api.post('/whatsapp/connect');
+      const response = await api.post<ApiEnvelope<WhatsAppStatus>>('/whatsapp/connect');
+      return response.data.data;
     },
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['whatsapp', 'status'] }),
   });
@@ -85,6 +86,20 @@ export function WhatsAppPage() {
             )}
           </div>
 
+          {isError && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              Não foi possível falar com a API (backend fora do ar?). Verifique se o
+              backend está rodando e tente novamente.
+            </div>
+          )}
+
+          {connect.isError && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              Falha ao iniciar a conexão. Verifique se o backend e o banco estão no ar e
+              tente de novo.
+            </div>
+          )}
+
           {status === 'CONNECTING' && qr ? (
             <div className="flex flex-col items-center gap-3 rounded-xl border bg-white p-6">
               <QRCodeSVG value={qr} size={256} />
@@ -101,7 +116,11 @@ export function WhatsAppPage() {
           ) : null}
 
           {status === 'DISCONNECTED' || status === 'ERROR' ? (
-            <Button onClick={() => connect.mutate()} disabled={connect.isPending}>
+            <Button
+              data-tour-target="connect-whatsapp"
+              onClick={() => connect.mutate()}
+              disabled={connect.isPending}
+            >
               {connect.isPending ? (
                 <Loader2 className="animate-spin" />
               ) : (
