@@ -136,7 +136,7 @@ function planLabels(plan: Plan): Array<{ included: boolean; text: string }> {  c
       ? 'Leilões ilimitados'
       : plan.maxAuctions >= 100
         ? 'Leilões ilimitados'
-        : `${plan.maxAuctions} leilões`;
+        : `Até ${plan.maxAuctions} leilões simultâneos`;
 
   const has = (feature: string): boolean => plan.features.includes(feature);
   const listasText = has('listas_ilimitadas')
