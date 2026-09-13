@@ -4,9 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Auction, AuctionEvent, AuctionEventStatus, AuctionStatus, ItemStatus } from '@prisma/client';
+import { Auction, AuctionEvent, AuctionEventStatus, AuctionStatus, ItemStatus, Role } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../common/database/prisma.service';
+import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { AuctionsService } from '../auctions/auctions.service';
 import { CreateAuctionEventDto, UpdateAuctionEventDto } from './dto/auction-event.dto';
 
@@ -35,6 +36,7 @@ export class AuctionEventsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auctionsService: AuctionsService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async create(tenantId: string, dto: CreateAuctionEventDto): Promise<AuctionEvent> {
@@ -153,6 +155,14 @@ export class AuctionEventsService {
     });
     if (items.length === 0) {
       throw new BadRequestException('Cadastre itens neste leilão antes de iniciar.');
+    }
+
+    // Trava de segurança para listas que já existiam acima do teto.
+    const maxItems = await this.planLimits.getMaxItemsPerList(tenantId, Role.ADMIN);
+    if (maxItems !== null && items.length > maxItems) {
+      throw new BadRequestException(
+        `Limite do plano Básico: máximo ${maxItems} itens por lista. Exclua itens ou faça upgrade para o Profissional.`,
+      );
     }
 
     const open = await this.prisma.auction.findMany({

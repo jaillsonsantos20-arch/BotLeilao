@@ -28,6 +28,7 @@ import type {
   Group,
   Item,
   ItemStatus,
+  Subscription,
 } from '@/types/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -185,6 +186,16 @@ function useAllAuctions() {
   });
 }
 
+function useSubscription() {
+  return useQuery({
+    queryKey: ['subscription-current'],
+    queryFn: async () => {
+      const response = await api.get<ApiEnvelope<Subscription | null>>('/subscriptions/current');
+      return response.data.data;
+    },
+  });
+}
+
 function extractError(error: unknown, fallback: string): string {
   const err = error as { response?: { data?: { message?: string | string[] } } };
   const message = err.response?.data?.message;
@@ -211,9 +222,18 @@ export function AuctionsPage() {
   const events = useEvents();
   const groups = useGroups();
   const auctions = useAuctions();
+  const subscription = useSubscription();
 
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const eventItems = useEventItems(selectedEventId);
+
+  // Básico: teto de 5 itens por lista (backend bloqueia; aqui só exibimos).
+  const listLimit = useMemo(() => {
+    const features = subscription.data?.plan.features ?? [];
+    return features.includes('listas_ilimitadas') ? null : 5;
+  }, [subscription.data]);
+  const listItemCount = eventItems.data?.length ?? 0;
+  const listFull = listLimit !== null && listItemCount >= listLimit;
 
   const [creatingEvent, setCreatingEvent] = useState(false);
   const [eventName, setEventName] = useState('');
@@ -971,7 +991,18 @@ export function AuctionsPage() {
               <h4 className="mb-3 flex items-center gap-2 font-medium">
                 <ImagePlus className="size-4" />
                 Cadastrar item neste leilão
+                {listLimit !== null && (
+                  <Badge variant={listFull ? 'warning' : 'secondary'}>
+                    {listItemCount}/{listLimit} no seu plano
+                  </Badge>
+                )}
               </h4>
+              {listFull && (
+                <p className="mb-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                  Limite do plano Básico: máximo {listLimit} itens por lista. Exclua um item
+                  ou faça upgrade para o Profissional para listas ilimitadas.
+                </p>
+              )}
               <form onSubmit={handleCreateItem} className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="item-name">Nome do item</Label>
@@ -1026,7 +1057,7 @@ export function AuctionsPage() {
                   </p>
                 </div>
                 <div className="sm:col-span-2">
-                  <Button type="submit" disabled={createItem.isPending}>
+                  <Button type="submit" disabled={createItem.isPending || listFull}>
                     {createItem.isPending && <Loader2 className="animate-spin" />}
                     Salvar item
                   </Button>

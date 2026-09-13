@@ -139,6 +139,11 @@ function planLabels(plan: Plan): Array<{ included: boolean; text: string }> {  c
         : `${plan.maxAuctions} leilões`;
 
   const has = (feature: string): boolean => plan.features.includes(feature);
+  const listasText = has('listas_ilimitadas')
+    ? 'Listas e eventos ilimitados'
+    : has('listas')
+      ? 'Listas com até 5 itens'
+      : 'Listas e eventos';
 
   return [
     { included: true, text: groups },
@@ -146,7 +151,7 @@ function planLabels(plan: Plan): Array<{ included: boolean; text: string }> {  c
     { included: true, text: auctions },
     { included: has('whatsapp'), text: 'Bot de WhatsApp' },
     { included: has('relatorios'), text: 'Relatórios de vendas' },
-    { included: has('listas'), text: 'Listas e eventos' },
+    { included: has('listas'), text: listasText },
   ];
 }
 

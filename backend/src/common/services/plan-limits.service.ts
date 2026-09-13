@@ -3,7 +3,13 @@ import { AuctionStatus, Role } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
 /**
- * Aplica os limites do plano contratado pelo tenant (maxGroups/maxUsers/maxAuctions).
+ * Aplica os limites do plano contratado pelo tenant (maxGroups/maxUsers/maxAuctions
+ * e itens por lista/evento).
+ *
+ * Convenção de features:
+ * - 'listas' = pode usar listas/eventos (ambos os planos têm).
+ * - 'listas_ilimitadas' = sem teto de itens por lista (só Profissional).
+ *   Sem essa feature, o teto é MAX_ITEMS_PER_LIST_BASIC (5).
  *
  * Operadores da plataforma (SUPER_ADMIN) e tenants sem plano ativo/em trial
  * não são limitados — mantém o comportamento atual de contas demo/legadas.
@@ -45,6 +51,40 @@ export class PlanLimitsService {
     );
   }
 
+  /**
+   * Teto de itens por lista no plano Básico. Profissional (com
+   * 'listas_ilimitadas') não tem teto.
+   */
+  static readonly MAX_ITEMS_PER_LIST_BASIC = 5;
+
+  /** Retorna o teto de itens por lista do tenant (null = ilimitado). */
+  async getMaxItemsPerList(tenantId: string, actorRole: Role): Promise<number | null> {
+    if (actorRole === Role.SUPER_ADMIN) return null;
+    const plan = await this.getPlan(tenantId);
+    if (!plan) return null;
+    const features = (plan.features as unknown as string[]) ?? [];
+    if (features.includes('listas_ilimitadas')) return null;
+    return PlanLimitsService.MAX_ITEMS_PER_LIST_BASIC;
+  }
+
+  /** Bloqueia adicionar item além do teto do plano na lista/evento. */
+  async assertCanAddItemToEvent(
+    tenantId: string,
+    eventId: string,
+    actorRole: Role,
+  ): Promise<void> {
+    const max = await this.getMaxItemsPerList(tenantId, actorRole);
+    if (max === null) return;
+    const current = await this.prisma.item.count({
+      where: { tenantId, auctionEventId: eventId },
+    });
+    if (current >= max) {
+      throw new BadRequestException(
+        `Limite do plano Básico: máximo ${max} itens por lista. Exclua um item ou faça upgrade para o Profissional.`,
+      );
+    }
+  }
+
   private async assert(
     tenantId: string,
     actorRole: Role,
@@ -54,16 +94,12 @@ export class PlanLimitsService {
   ): Promise<void> {
     if (actorRole === Role.SUPER_ADMIN) return;
 
-    const subscription = await this.prisma.subscription.findFirst({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      include: { plan: true },
-    });
+    const plan = await this.getPlan(tenantId);
+    if (!plan) return;
 
-    if (!subscription) return;
-
-    const plan = subscription.plan as unknown as Record<string, number | null>;
-    const limit = plan[limitKey] as number | null;
+    const limit = (plan as unknown as Record<string, number | null>)[limitKey] as
+      | number
+      | null;
     if (limit === null || limit === undefined) return;
 
     const current = await count();
@@ -72,5 +108,14 @@ export class PlanLimitsService {
         `Limite do plano atingido: ${label} (máximo ${limit}).`,
       );
     }
+  }
+
+  private async getPlan(tenantId: string) {
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      include: { plan: true },
+    });
+    return subscription?.plan ?? null;
   }
 }

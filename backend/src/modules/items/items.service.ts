@@ -4,10 +4,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Auction, Item, ItemStatus, SessionStatus } from '@prisma/client';
+import { Auction, Item, ItemStatus, Role, SessionStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../common/database/prisma.service';
+import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { AuctionEventsService } from '../auction-events/auction-events.service';
 import { AuctionsService } from '../auctions/auctions.service';
 import { AuctionEngine } from '../whatsapp/auction.engine';
@@ -29,9 +30,10 @@ export class ItemsService {
     private readonly auctionEventsService: AuctionEventsService,
     private readonly whatsappManager: WhatsAppClientManager,
     private readonly engine: AuctionEngine,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
-  async create(tenantId: string, dto: CreateItemDto): Promise<Item> {
+  async create(tenantId: string, dto: CreateItemDto, actorRole: Role = Role.ADMIN): Promise<Item> {
     if (dto.initialValue <= 0) {
       throw new BadRequestException('O valor inicial deve ser maior que zero.');
     }
@@ -40,6 +42,7 @@ export class ItemsService {
     }
     if (dto.auctionEventId) {
       await this.auctionEventsService.ensureOpen(tenantId, dto.auctionEventId);
+      await this.planLimits.assertCanAddItemToEvent(tenantId, dto.auctionEventId, actorRole);
     }
 
     return this.prisma.item.create({

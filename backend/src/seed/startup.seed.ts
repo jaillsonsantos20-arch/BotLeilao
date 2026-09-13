@@ -21,22 +21,38 @@ export async function ensureStartupSeed(): Promise<void> {
   try {
     await prisma.plan.upsert({
       where: { id: 'plan-basico' },
-      update: {},
+      update: {
+        name: 'Básico',
+        description: 'Para pequenos grupos iniciarem nas vendas por leilão.',
+        price: 49.9,
+        maxGroups: 1,
+        maxUsers: 1,
+        features: ['whatsapp', 'listas'],
+        status: PlanStatus.ACTIVE,
+      },
       create: {
         id: 'plan-basico',
         name: 'Básico',
         description: 'Para pequenos grupos iniciarem nas vendas por leilão.',
         price: 49.9,
-        maxGroups: 2,
+        maxGroups: 1,
         maxUsers: 1,
-        features: ['whatsapp'],
+        features: ['whatsapp', 'listas'],
         status: PlanStatus.ACTIVE,
       },
     });
 
     await prisma.plan.upsert({
       where: { id: 'plan-profissional' },
-      update: {},
+      update: {
+        name: 'Profissional',
+        description: 'Para operações em crescimento, com mais grupos e usuários.',
+        price: 99.9,
+        maxGroups: 5,
+        maxUsers: 2,
+        features: ['whatsapp', 'relatorios', 'listas', 'listas_ilimitadas'],
+        status: PlanStatus.ACTIVE,
+      },
       create: {
         id: 'plan-profissional',
         name: 'Profissional',
@@ -44,7 +60,7 @@ export async function ensureStartupSeed(): Promise<void> {
         price: 99.9,
         maxGroups: 5,
         maxUsers: 2,
-        features: ['whatsapp', 'relatorios', 'listas'],
+        features: ['whatsapp', 'relatorios', 'listas', 'listas_ilimitadas'],
         status: PlanStatus.ACTIVE,
       },
     });

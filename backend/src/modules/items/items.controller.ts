@@ -79,7 +79,7 @@ export class ItemsController {
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Cadastra um novo item para leilão' })
   create(@CurrentUser() user: RequestUser, @Body() dto: CreateItemDto) {
-    return this.itemsService.create(user.tenantId, dto);
+    return this.itemsService.create(user.tenantId, dto, user.role);
   }
 
   @Post('upload-image')
