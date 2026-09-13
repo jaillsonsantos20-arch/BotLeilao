@@ -1,4 +1,4 @@
-# BotLeilão
+# LanceZap
 
 SaaS de **leilões em grupos do WhatsApp**: um bot lê os lances e encerra o leilão automaticamente, enquanto o painel web (admin) gerencia grupos, leilões, usuários, dashboard e relatórios.
 

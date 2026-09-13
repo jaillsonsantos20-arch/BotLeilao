@@ -23,7 +23,11 @@ export function formatDate(value: string | null | undefined): string {
 
 /**
  * Converte uma data para o formato aceito pelos filtros (YYYY-MM-DD).
+ * Aceita string ISO ou Date; valores nulos/indefinidos retornam vazio.
  */
-export function toDateInputValue(date: Date): string {
-  return date.toISOString().slice(0, 10);
+export function toDateInputValue(date: Date | string | null | undefined): string {
+  if (!date) return '';
+  const parsed = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toISOString().slice(0, 10);
 }

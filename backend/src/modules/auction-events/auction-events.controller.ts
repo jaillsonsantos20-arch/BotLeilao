@@ -14,7 +14,11 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
 import { AuctionEngine } from '../whatsapp/auction.engine';
 import { AuctionEventsService } from './auction-events.service';
-import { CreateAuctionEventDto, UpdateAuctionEventDto } from './dto/auction-event.dto';
+import {
+  CreateAuctionEventDto,
+  ScheduleListItemEndDto,
+  UpdateAuctionEventDto,
+} from './dto/auction-event.dto';
 
 @ApiTags('auction-events')
 @ApiBearerAuth()
@@ -76,6 +80,23 @@ export class AuctionEventsController {
     @Param('auctionId') auctionId: string,
   ) {
     return this.auctionEngine.closeListItemFromPanel(user.tenantId, id, auctionId);
+  }
+
+  @Post(':id/items/:auctionId/schedule-end')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Agenda (ou remove) o encerramento de um item da lista' })
+  scheduleItemEnd(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Param('auctionId') auctionId: string,
+    @Body() dto: ScheduleListItemEndDto,
+  ) {
+    return this.auctionEngine.scheduleListItemEndFromPanel(
+      user.tenantId,
+      id,
+      auctionId,
+      dto.endsAt ?? null,
+    );
   }
 
   @Patch(':id')

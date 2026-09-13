@@ -250,7 +250,7 @@ export class AuthService {
     const url = `${this.frontendUrl}/verificar-email?token=${token}`;
     await this.mail.send({
       to: user.email,
-      subject: 'Confirme seu e-mail no BotLeilão',
+      subject: 'Confirme seu e-mail no LanceZap',
       text: `Olá! Confirme seu e-mail para ativar sua conta: ${url}\n\nO link é válido por 24 horas.`,
       html: `<p>Olá! Confirme seu e-mail clicando no link abaixo:</p><p><a href="${url}">Confirmar e-mail</a></p><p>O link é válido por 24 horas.</p>`,
     });
@@ -311,7 +311,7 @@ export class AuthService {
     const url = `${this.frontendUrl}/redefinir-senha?token=${token}`;
     await this.mail.send({
       to: user.email,
-      subject: 'Redefinição de senha no BotLeilão',
+      subject: 'Redefinição de senha no LanceZap',
       text: `Recebemos uma solicitação de redefinição de senha para sua conta. Se não foi você, ignore este e-mail.\n\nPara definir uma nova senha, acesse: ${url}\n\nO link é válido por 30 minutos.`,
       html: `<p>Recebemos uma solicitação de redefinição de senha. Se não foi você, ignore este e-mail.</p><p><a href="${url}">Definir nova senha</a></p><p>O link é válido por 30 minutos.</p>`,
     });
@@ -369,7 +369,7 @@ export class AuthService {
     const secret = totp.generateSecret();
     const otpauthUrl = totp.toURI({
       label: user.email,
-      issuer: 'BotLeilão',
+      issuer: 'LanceZap',
       secret,
     });
 

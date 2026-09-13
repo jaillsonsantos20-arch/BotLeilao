@@ -97,6 +97,9 @@ export interface AuctionEvent {
   description: string | null;
   groupId: string | null;
   periodicStatusMinutes: number | null;
+  scheduledStartAt: string | null;
+  scheduledEndAt: string | null;
+  minBidStep: string | null;
   status: AuctionEventStatus;
   createdAt: string;
   updatedAt: string;
@@ -145,6 +148,8 @@ export interface Auction {
   paymentStatus: 'PENDING' | 'PAID';
   startedAt: string;
   endsAt: string | null;
+  scheduledEndAt: string | null;
+  minBidStep: string | null;
   closedAt: string | null;
   winnerBidId: string | null;
   group?: { id: string; name: string };
@@ -204,4 +209,64 @@ export interface PaymentRecord {
   paidAt: string | null;
   createdAt: string;
   plan: string | null;
+}
+
+export interface AdminSubscription {
+  id: string;
+  status: SubscriptionStatus;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  canceledAt: string | null;
+  createdAt: string;
+  tenant: { id: string; name: string; email: string };
+  plan: {
+    id: string;
+    name: string;
+    price: number;
+    features: string[];
+    maxGroups: number;
+    maxUsers: number;
+  };
+  latestPayment: {
+    status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+    paidAt: string | null;
+    amount: number;
+  } | null;
+}
+
+export interface AdminPayment {
+  id: string;
+  amount: number;
+  method: 'PIX' | 'CARD' | 'BOLETO' | 'MANUAL';
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+  paidAt: string | null;
+  createdAt: string;
+  externalId: string | null;
+}
+
+export interface AdminSubscriptionDetail {
+  id: string;
+  tenantId: string;
+  planId: string;
+  status: SubscriptionStatus;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  canceledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  tenant: { id: string; name: string; email: string; cnpj: string | null; createdAt: string };
+  plan: Plan;
+  payments: AdminPayment[];
+}
+
+export interface AdminSubscriptionSummary {
+  totalTenants: number;
+  totalSubscriptions: number;
+  byStatus: Record<SubscriptionStatus, number>;
+  paidRevenue: number;
+  activeMrr: number;
+}
+
+export interface AdminPlan extends Plan {
+  status: 'ACTIVE' | 'INACTIVE';
 }

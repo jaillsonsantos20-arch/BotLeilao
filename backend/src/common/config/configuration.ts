@@ -68,7 +68,7 @@ export default (): AppConfig => ({
     secure: process.env.SMTP_SECURE === 'true',
     user: process.env.SMTP_USER ?? '',
     pass: process.env.SMTP_PASS ?? '',
-    from: process.env.SMTP_FROM ?? 'BotLeilão <no-reply@botleilao.com>',
+    from: process.env.SMTP_FROM ?? 'LanceZap <no-reply@botleilao.com>',
   },
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost',
   subscription: {

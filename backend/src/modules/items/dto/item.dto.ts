@@ -39,10 +39,10 @@ export class CreateItemDto {
   order?: number;
 
   @IsOptional()
-  @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de segundos.' })
-  @Min(10, { message: 'A duração mínima é de 10 segundos.' })
-  @Max(86400, { message: 'A duração máxima é de 24 horas.' })
-  durationSeconds?: number;
+  @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de minutos.' })
+  @Min(1, { message: 'A duração mínima é de 1 minuto.' })
+  @Max(1440, { message: 'A duração máxima é de 1440 minutos (24 horas).' })
+  durationMinutes?: number;
 }
 
 export class ListItemsQueryDto {
@@ -69,8 +69,8 @@ export class StartItemAuctionDto {
   groupId: string;
 
   @IsOptional()
-  @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de segundos.' })
-  @Min(10, { message: 'A duração mínima é de 10 segundos.' })
-  @Max(86400, { message: 'A duração máxima é de 24 horas.' })
-  durationSeconds?: number;
+  @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de minutos.' })
+  @Min(1, { message: 'A duração mínima é de 1 minuto.' })
+  @Max(1440, { message: 'A duração máxima é de 1440 minutos (24 horas).' })
+  durationMinutes?: number;
 }

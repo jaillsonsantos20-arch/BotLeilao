@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleStop,
+  Clock,
   FileText,
   FolderPlus,
   Gavel,
@@ -68,7 +69,26 @@ const AUCTION_STATUS: Record<AuctionStatus, { label: string; variant: 'success' 
   CANCELLED: { label: 'Cancelado', variant: 'destructive' },
 };
 
-const DEFAULT_ITEM_DURATION_SECONDS = 120;
+const DEFAULT_ITEM_DURATION_MINUTES = 2;
+
+function formatItemDuration(durationSeconds: number): string {
+  if (durationSeconds <= 0) return 'Sem tempo';
+  return durationSeconds % 60 === 0 ? `${durationSeconds / 60} min` : `${durationSeconds}s`;
+}
+
+function toTimeValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function nextOccurrenceOfTime(hours: number, minutes: number): Date {
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target;
+}
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
   PIX: 'Pix',
@@ -200,6 +220,9 @@ export function AuctionsPage() {
   const [eventDescription, setEventDescription] = useState('');
   const [eventGroupId, setEventGroupId] = useState('');
   const [eventStatusInterval, setEventStatusInterval] = useState('');
+  const [eventScheduledStart, setEventScheduledStart] = useState('');
+  const [eventScheduledEnd, setEventScheduledEnd] = useState('');
+  const [eventMinBidStep, setEventMinBidStep] = useState('');
   const [eventFormError, setEventFormError] = useState<string | null>(null);
 
   const [eventError, setEventError] = useState<string | null>(null);
@@ -207,10 +230,15 @@ export function AuctionsPage() {
   const [itemName, setItemName] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [itemValue, setItemValue] = useState('');
+  const [itemDuration, setItemDuration] = useState('');
   const [itemFormError, setItemFormError] = useState<string | null>(null);
 
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
+
+  const [scheduleTarget, setScheduleTarget] = useState<{ item: Item; auction: Auction } | null>(null);
+  const [scheduleEndAt, setScheduleEndAt] = useState('');
+  const [scheduleEndError, setScheduleEndError] = useState<string | null>(null);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['auction-events'] });
@@ -236,6 +264,13 @@ export function AuctionsPage() {
         periodicStatusMinutes: eventStatusInterval
           ? Math.max(0, parseInt(eventStatusInterval, 10))
           : 0,
+        scheduledStartAt: eventScheduledStart
+          ? new Date(eventScheduledStart).toISOString()
+          : undefined,
+        scheduledEndAt: eventScheduledEnd ? new Date(eventScheduledEnd).toISOString() : undefined,
+        minBidStep: eventMinBidStep.trim()
+          ? Math.max(0, parseFloat(eventMinBidStep.replace(',', '.')))
+          : undefined,
       });
       return response.data.data;
     },
@@ -246,6 +281,9 @@ export function AuctionsPage() {
       setEventDescription('');
       setEventGroupId('');
       setEventStatusInterval('');
+      setEventScheduledStart('');
+      setEventScheduledEnd('');
+      setEventMinBidStep('');
       setEventFormError(null);
       setSelectedEventId(event.id);
       setListGroupId(event.groupId ?? '');
@@ -288,6 +326,24 @@ export function AuctionsPage() {
       setListError(extractError(err, 'Falha ao encerrar o item.')),
   });
 
+  const scheduleItemEnd = useMutation({
+    mutationFn: async (params: { eventId: string; auctionId: string; endsAt: string | null }) => {
+      const response = await api.post<ApiEnvelope<{ itemName: string }>>(
+        `/auction-events/${params.eventId}/items/${params.auctionId}/schedule-end`,
+        { endsAt: params.endsAt },
+      );
+      return response.data.data;
+    },
+    onSuccess: () => {
+      invalidate();
+      setScheduleTarget(null);
+      setScheduleEndAt('');
+      setScheduleEndError(null);
+    },
+    onError: (err) =>
+      setScheduleEndError(extractError(err, 'Falha ao agendar o encerramento.')),
+  });
+
   const removeEvent = useMutation({
     mutationFn: async (eventId: string) => {
       await api.delete(`/auction-events/${eventId}`);
@@ -307,7 +363,9 @@ export function AuctionsPage() {
         name: itemName,
         description: itemDescription || undefined,
         initialValue: parseFloat(itemValue),
-        durationSeconds: DEFAULT_ITEM_DURATION_SECONDS,
+        durationMinutes: itemDuration.trim()
+          ? Math.max(1, parseInt(itemDuration, 10) || DEFAULT_ITEM_DURATION_MINUTES)
+          : undefined,
       });
       return response.data.data;
     },
@@ -316,6 +374,7 @@ export function AuctionsPage() {
       setItemName('');
       setItemDescription('');
       setItemValue('');
+      setItemDuration('');
       setItemFormError(null);
     },
     onError: (err) => setItemFormError(extractError(err, 'Falha ao cadastrar o item.')),
@@ -503,7 +562,7 @@ export function AuctionsPage() {
               <FileText className="size-4" />
               Relatório
             </Button>
-            <Button onClick={() => setCreatingEvent((prev) => !prev)}>
+            <Button data-tour-target="new-event" onClick={() => setCreatingEvent((prev) => !prev)}>
               {creatingEvent ? <X className="size-4" /> : <Plus className="size-4" />}
               {creatingEvent ? 'Cancelar' : 'Criar novo leilão'}
             </Button>
@@ -543,7 +602,7 @@ export function AuctionsPage() {
                   placeholder="Renda para a festa de São João"
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
                   <Label htmlFor="event-group">Grupo do WhatsApp</Label>
                   <select
@@ -578,6 +637,52 @@ export function AuctionsPage() {
                   <p className="text-xs text-muted-foreground">
                     O bot reenvia a lista de itens a cada X minutos. Deixe 0 para
                     enviar somente quando pedirem *!status*.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="event-min-bid-step">Incremento mínimo de lance (R$)</Label>
+                  <Input
+                    id="event-min-bid-step"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={eventMinBidStep}
+                    onChange={(event) => setEventMinBidStep(event.target.value)}
+                    placeholder="Ex.: 1,00"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Valor mínimo de acréscimo por lance. Ex.: lance atual R$ 50,00
+                    com incremento de R$ 1,00 — o próximo lance precisa ser no
+                    mínimo R$ 51,00 (50,50 não é aceito). Deixe vazio para aceitar
+                    qualquer lance maior.
+                  </p>
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="event-scheduled-start">Início automático (opcional)</Label>
+                  <Input
+                    id="event-scheduled-start"
+                    type="datetime-local"
+                    value={eventScheduledStart}
+                    onChange={(event) => setEventScheduledStart(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Neste horário o bot abre a lista de itens no grupo
+                    automaticamente.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="event-scheduled-end">Término automático (opcional)</Label>
+                  <Input
+                    id="event-scheduled-end"
+                    type="datetime-local"
+                    value={eventScheduledEnd}
+                    onChange={(event) => setEventScheduledEnd(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Neste horário o leilão é encerrado automaticamente (3 min
+                    antes o bot avisa no grupo).
                   </p>
                 </div>
               </div>
@@ -756,6 +861,21 @@ export function AuctionsPage() {
                 ) : (
                   <Badge variant="outline">Status sob demanda (!status)</Badge>
                 )}
+                {selectedEvent.minBidStep && (
+                  <Badge variant="outline">
+                    Incremento: {formatCurrency(selectedEvent.minBidStep)}
+                  </Badge>
+                )}
+                {selectedEvent.scheduledStartAt && (
+                  <Badge variant="outline">
+                    Início: {formatDate(selectedEvent.scheduledStartAt)}
+                  </Badge>
+                )}
+                {selectedEvent.scheduledEndAt && (
+                  <Badge variant="outline">
+                    Término: {formatDate(selectedEvent.scheduledEndAt)}
+                  </Badge>
+                )}
               </div>
               {!canLeilao ? (
                 <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -806,6 +926,7 @@ export function AuctionsPage() {
                     )}
                   </div>
                   <Button
+                    data-tour-target="start-list"
                     type="submit"
                     disabled={
                       startList.isPending ||
@@ -846,7 +967,7 @@ export function AuctionsPage() {
               )}
             </div>
 
-            <div className="rounded-md border p-4">
+            <div className="rounded-md border p-4" data-tour-target="new-item">
               <h4 className="mb-3 flex items-center gap-2 font-medium">
                 <ImagePlus className="size-4" />
                 Cadastrar item neste leilão
@@ -883,6 +1004,26 @@ export function AuctionsPage() {
                     placeholder="100"
                     required
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="item-duration">Duração do item (minutos)</Label>
+                  <Input
+                    id="item-duration"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    step="1"
+                    value={itemDuration}
+                    onChange={(event) => setItemDuration(event.target.value)}
+                    placeholder="2"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Opcional. Tempo de cada item na lista, em minutos. O bot
+                    encerra o item quando o tempo esgota e avisa no grupo 3
+                    minutos antes (se a duração for maior que 3 minutos).
+                    Deixe vazio para o item ficar aberto até encerrar
+                    manualmente pelo painel.
+                  </p>
                 </div>
                 <div className="sm:col-span-2">
                   <Button type="submit" disabled={createItem.isPending}>
@@ -940,7 +1081,14 @@ export function AuctionsPage() {
                               {formatCurrency(item.initialValue)}
                             </TableCell>
                             <TableCell className="text-right text-muted-foreground">
-                              {item.durationSeconds}s
+                              <div>
+                                {formatItemDuration(item.durationSeconds)}
+                                {openAuctionByItem.get(item.id)?.scheduledEndAt && (
+                                  <div className="text-xs text-amber-600">
+                                    Encerra {formatDate(openAuctionByItem.get(item.id)!.scheduledEndAt)}
+                                  </div>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell>
                               <Badge variant={status.variant}>{status.label}</Badge>
@@ -977,6 +1125,34 @@ export function AuctionsPage() {
                                 >
                                   <CircleStop className="size-4" />
                                   Encerrar
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={
+                                    !openAuctionByItem.get(item.id) ||
+                                    selectedEvent.status === 'CLOSED' ||
+                                    scheduleItemEnd.isPending
+                                  }
+                                  onClick={() => {
+                                    const auction = openAuctionByItem.get(item.id);
+                                    if (!auction) return;
+                                    setScheduleEndAt(
+                                      auction.scheduledEndAt
+                                        ? toTimeValue(new Date(auction.scheduledEndAt))
+                                        : '',
+                                    );
+                                    setScheduleEndError(null);
+                                    setScheduleTarget({ item, auction });
+                                  }}
+                                  title={
+                                    openAuctionByItem.get(item.id)
+                                      ? 'Agenda o horário em que este item será encerrado e avisa no grupo'
+                                      : 'Este item ainda não está em leilão'
+                                  }
+                                >
+                                  <Clock className="size-4" />
+                                  {openAuctionByItem.get(item.id)?.scheduledEndAt ? 'Reagendar' : 'Agendar fim'}
                                 </Button>
                                 <Button
                                   size="icon"
@@ -1440,6 +1616,97 @@ export function AuctionsPage() {
                   </Button>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scheduleTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex w-full max-w-md flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="flex items-center gap-2 text-lg font-semibold">
+                  <Clock className="size-5" />
+                  Agendar encerramento
+                </h3>
+                <p className="text-sm text-muted-foreground">{scheduleTarget.item.name}</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Fechar"
+                onClick={() => setScheduleTarget(null)}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div className="space-y-2">
+                <Label htmlFor="schedule-end">Encerrar às</Label>
+                <Input
+                  id="schedule-end"
+                  type="time"
+                  value={scheduleEndAt}
+                  onChange={(event) => setScheduleEndAt(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Só o horário: o item encerra hoje neste horário. Se o horário já
+                  passou, o encerramento fica agendado para amanhã. Neste horário o
+                  bot encerra o item no grupo, mesmo com o leilão já em andamento,
+                  e avisa os participantes com antecedência. Lances não estendem o
+                  prazo agendado.
+                </p>
+              </div>
+              {scheduleEndError && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {scheduleEndError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t p-4">
+              {scheduleTarget.auction.scheduledEndAt && (
+                <Button
+                  variant="outline"
+                  disabled={scheduleItemEnd.isPending}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `Remover o agendamento de encerramento do item "${scheduleTarget.item.name}"?`,
+                      )
+                    ) {
+                      scheduleItemEnd.mutate({
+                        eventId: selectedEventId!,
+                        auctionId: scheduleTarget.auction.id,
+                        endsAt: null,
+                      });
+                    }
+                  }}
+                >
+                  Remover agendamento
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => setScheduleTarget(null)}>
+                Cancelar
+              </Button>
+              <Button
+                disabled={!scheduleEndAt || scheduleItemEnd.isPending}
+                onClick={() => {
+                  const [hours, minutes] = scheduleEndAt.split(':').map(Number);
+                  scheduleItemEnd.mutate({
+                    eventId: selectedEventId!,
+                    auctionId: scheduleTarget.auction.id,
+                    endsAt: nextOccurrenceOfTime(hours, minutes).toISOString(),
+                  });
+                }}
+              >
+                {scheduleItemEnd.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Clock className="size-4" />
+                )}
+                {scheduleTarget.auction.scheduledEndAt ? 'Reagendar' : 'Agendar'}
+              </Button>
             </div>
           </div>
         </div>

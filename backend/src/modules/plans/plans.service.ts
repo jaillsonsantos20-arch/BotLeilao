@@ -42,4 +42,13 @@ export class PlansService {
     const plans = await this.listPublic();
     return plans[0] ?? null;
   }
+
+  /** Lista todos os planos (ativos e inativos) para a gestão da plataforma. */
+  async listAll(): Promise<PublicPlan[]> {
+    const plans = await this.prisma.plan.findMany({
+      orderBy: { price: 'asc' },
+    });
+
+    return plans.map((plan) => ({ ...plan, price: Number(plan.price) }));
+  }
 }

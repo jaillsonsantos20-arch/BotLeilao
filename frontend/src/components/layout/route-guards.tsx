@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/stores/auth';
+import type { User } from '@/types/api';
 
 function FullScreenLoader() {
   return (
@@ -33,5 +34,17 @@ export function GuestRoute({ children }: { children: ReactNode }) {
 
   if (isLoading) return <FullScreenLoader />;
   if (isAuthenticated) return <Navigate to="/painel" replace />;
+  return <>{children}</>;
+}
+
+/**
+ * Exige que o usuário autenticado possua exatamente a role informada.
+ * Usado para áreas exclusivas da plataforma (ex.: gestão de assinaturas).
+ */
+export function RoleRoute({ role, children }: { role: User['role']; children: ReactNode }) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) return <FullScreenLoader />;
+  if (!user || user.role !== role) return <Navigate to="/painel" replace />;
   return <>{children}</>;
 }

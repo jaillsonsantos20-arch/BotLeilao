@@ -64,7 +64,7 @@ export class PaymentsService {
 
     const body: Record<string, unknown> = {
       transaction_amount: amount,
-      description: `Assinatura BotLeilão - Plano ${subscription.plan.name}`,
+      description: `Assinatura LanceZap - Plano ${subscription.plan.name}`,
       payment_method_id: 'pix',
       payer: { email: payerEmail },
       external_reference: `sub_${subscription.id}_${externalId}`,

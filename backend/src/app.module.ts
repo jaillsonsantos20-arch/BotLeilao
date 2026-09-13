@@ -15,6 +15,7 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { AuditModule } from './common/services/audit.module';
 import { MailModule } from './common/services/mail.module';
 import { PlanLimitsModule } from './common/services/plan-limits.module';
+import { AdminSubscriptionsModule } from './modules/admin-subscriptions/admin-subscriptions.module';
 import { AuctionEventsModule } from './modules/auction-events/auction-events.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuctionsModule } from './modules/auctions/auctions.module';
@@ -47,6 +48,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     AuditModule,
     MailModule,
     PlanLimitsModule,
+    AdminSubscriptionsModule,
     AuthModule,
     UsersModule,
     GroupsModule,

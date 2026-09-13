@@ -39,6 +39,7 @@ export class AuctionEventsService {
 
   async create(tenantId: string, dto: CreateAuctionEventDto): Promise<AuctionEvent> {
     await this.assertGroup(tenantId, dto.groupId);
+    this.assertSchedule(dto.scheduledStartAt, dto.scheduledEndAt);
     return this.prisma.auctionEvent.create({
       data: {
         tenantId,
@@ -46,6 +47,10 @@ export class AuctionEventsService {
         description: dto.description ?? null,
         groupId: dto.groupId ?? null,
         periodicStatusMinutes: dto.periodicStatusMinutes ?? null,
+        scheduledStartAt: dto.scheduledStartAt ? new Date(dto.scheduledStartAt) : null,
+        scheduledEndAt: dto.scheduledEndAt ? new Date(dto.scheduledEndAt) : null,
+        minBidStep:
+          dto.minBidStep !== undefined ? new Decimal(dto.minBidStep) : null,
       },
     });
   }
@@ -93,6 +98,7 @@ export class AuctionEventsService {
     if (dto.groupId !== undefined) {
       await this.assertGroup(tenantId, dto.groupId);
     }
+    this.assertSchedule(dto.scheduledStartAt, dto.scheduledEndAt);
     return this.prisma.auctionEvent.update({
       where: { id: eventId },
       data: {
@@ -102,8 +108,27 @@ export class AuctionEventsService {
         ...(dto.periodicStatusMinutes !== undefined
           ? { periodicStatusMinutes: dto.periodicStatusMinutes }
           : {}),
+        ...(dto.minBidStep !== undefined
+          ? { minBidStep: dto.minBidStep !== null ? new Decimal(dto.minBidStep) : null }
+          : {}),
+        ...(dto.scheduledStartAt !== undefined
+          ? { scheduledStartAt: dto.scheduledStartAt ? new Date(dto.scheduledStartAt) : null }
+          : {}),
+        ...(dto.scheduledEndAt !== undefined
+          ? { scheduledEndAt: dto.scheduledEndAt ? new Date(dto.scheduledEndAt) : null }
+          : {}),
       },
     });
+  }
+
+  private assertSchedule(scheduledStartAt?: string, scheduledEndAt?: string): void {
+    if (
+      scheduledStartAt &&
+      scheduledEndAt &&
+      new Date(scheduledEndAt) <= new Date(scheduledStartAt)
+    ) {
+      throw new BadRequestException('O término agendado deve ser depois do início agendado.');
+    }
   }
 
   /**
@@ -151,7 +176,11 @@ export class AuctionEventsService {
           durationSeconds: item.durationSeconds,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
-          endsAt: new Date(Date.now() + item.durationSeconds * 1000),
+          minBidStep: event.minBidStep ?? null,
+          endsAt:
+            item.durationSeconds > 0
+              ? new Date(Date.now() + item.durationSeconds * 1000)
+              : null,
         },
       });
       await this.prisma.item.update({

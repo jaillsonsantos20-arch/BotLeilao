@@ -4,7 +4,6 @@ import {
   BarChart3,
   Check,
   ChevronDown,
-  Gavel,
   ListChecks,
   MessageCircle,
   MessageSquareReply,
@@ -15,6 +14,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { Logo } from '@/components/ui/logo';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/stores/auth';
 import { api } from '@/lib/api';
@@ -22,6 +22,12 @@ import type { ApiEnvelope, Plan } from '@/types/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+
+// URL de suporte via WhatsApp. Configure com VITE_SUPPORT_WHATSAPP_URL
+// (ex.: https://wa.me/5586999696897?text=Ol%C3%A1...).
+const SUPPORT_WHATSAPP_URL =
+  (import.meta.env as Record<string, string | undefined>).VITE_SUPPORT_WHATSAPP_URL ??
+  'https://wa.me/5586999696897?text=Ol%C3%A1!%20Preciso%20de%20ajuda%20com%20o%20LanceZap.';
 
 function formatPrice(value: number): string {
   return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -101,8 +107,7 @@ const TESTIMONIALS = [
 
 const FAQ = [
   {
-    q: 'Preciso instalar algo?',
-    a: 'Não. Você cadastra seus produtos no painel, escaneia o QR Code para conectar o WhatsApp do seu grupo e o bot já trabalhou. Sem instalar nada no seu celular.',
+    q: 'Preciso instalar algo?',    a: 'Não. Você cadastra seus produtos no painel, escaneia o QR Code para conectar o WhatsApp do seu grupo e o bot já trabalhou. Sem instalar nada no seu celular.',
   },
   {
     q: 'Meu número do WhatsApp corre algum risco?',
@@ -122,8 +127,7 @@ const FAQ = [
   },
 ];
 
-function planLabels(plan: Plan): Array<{ included: boolean; text: string }> {
-  const groups =
+function planLabels(plan: Plan): Array<{ included: boolean; text: string }> {  const groups =
     plan.maxGroups >= 100 ? 'Grupos ilimitados' : `Até ${plan.maxGroups} grupos`;
   const users =
     plan.maxUsers >= 20 ? 'Usuários ilimitados' : `Até ${plan.maxUsers} usuários`;
@@ -152,6 +156,15 @@ export function LandingPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [billing, setBilling] = useState<Billing>('monthly');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [showStickyCta, setShowStickyCta] = useState(false);
+  const [stickyDismissed, setStickyDismissed] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShowStickyCta(window.scrollY > 600);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   useEffect(() => {
     if (isLoading) return;
@@ -178,10 +191,7 @@ export function LandingPage() {
       <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <div className="flex items-center gap-2">
-            <div className="flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/30">
-              <Gavel className="size-5" />
-            </div>
-            <span className="text-lg font-semibold tracking-tight">BotLeilão</span>
+            <Logo size={32} />
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" asChild>
@@ -251,9 +261,7 @@ export function LandingPage() {
           <div className="relative mx-auto w-full max-w-sm">
             <div className="flex flex-col gap-3 rounded-3xl border bg-card p-5 shadow-2xl shadow-indigo-500/10">
               <div className="flex items-center gap-3 border-b pb-3">
-                <div className="flex size-10 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
-                  <Gavel className="size-5" />
-                </div>
+                <Logo size={40} />
                 <div>
                   <p className="text-sm font-semibold">Bot Leilão — Grupo da Loja</p>
                   <p className="text-xs text-emerald-600">online</p>
@@ -597,8 +605,8 @@ export function LandingPage() {
       <footer className="border-t">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-sm text-muted-foreground sm:flex-row">
           <div className="flex items-center gap-2">
-            <Gavel className="size-4" />
-            <span>BotLeilão — leilões inteligentes no WhatsApp</span>
+            <Logo size={20} />
+            <span>LanceZap — leilões inteligentes no WhatsApp</span>
           </div>
           <div className="flex items-center gap-4">
             <a href="#planos" className="hover:text-foreground hover:underline">
@@ -607,12 +615,62 @@ export function LandingPage() {
             <a href="#depoimentos" className="hover:text-foreground hover:underline">
               Depoimentos
             </a>
+            <a
+              href={SUPPORT_WHATSAPP_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-foreground hover:underline"
+            >
+              Suporte
+            </a>
             <Link to="/login" className="font-medium text-primary hover:underline">
               Acessar painel
             </Link>
           </div>
         </div>
       </footer>
+
+      {/* CTA sticky + suporte flutuante */}
+      {showStickyCta && !stickyDismissed && (
+        <div className="fixed inset-x-0 bottom-4 z-40 mx-auto flex w-fit max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border bg-background/95 py-2 pl-4 pr-2 shadow-2xl shadow-primary/20 backdrop-blur-xl">
+          <span className="hidden text-sm font-medium sm:inline">
+            24h grátis — sem cartão
+          </span>
+          <span className="text-sm font-medium sm:hidden">24h grátis</span>
+          <Button size="sm" asChild className="rounded-full">
+            <Link to="/registro">
+              Testar grátis
+              <ArrowRight className="ml-1 size-4" />
+            </Link>
+          </Button>
+          <button
+            type="button"
+            aria-label="Fechar oferta"
+            onClick={() => setStickyDismissed(true)}
+            className="rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
+
+      <a
+        href={SUPPORT_WHATSAPP_URL}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Falar com o suporte no WhatsApp"
+        title="Falar com o suporte no WhatsApp"
+        className={cn(
+          'fixed right-4 z-40 flex size-14 items-center justify-center rounded-full bg-[#25D366] text-white shadow-2xl shadow-emerald-500/40 transition-all hover:scale-105 hover:bg-[#1EBE5B]',
+          showStickyCta && !stickyDismissed ? 'bottom-20' : 'bottom-4',
+        )}
+      >
+        <MessageCircle className="size-6" />
+        <span className="absolute -top-1 -right-1 flex size-4">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex size-4 rounded-full border-2 border-white bg-emerald-500" />
+        </span>
+      </a>
     </div>
   );
 }

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Gavel,
+  HelpCircle,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -8,10 +9,15 @@ import {
   ShieldCheck,
   Users,
   X,
+  CreditCard,
 } from 'lucide-react';
+import { Logo } from '@/components/ui/logo';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/stores/auth';
 import { SubscriptionGate } from '@/components/layout/subscription-gate';
+import { OnboardingSpotlight } from '@/components/onboarding/onboarding-spotlight';
+import { OnboardingTour } from '@/components/onboarding/onboarding-tour';
+import { hasCompletedOnboarding } from '@/components/onboarding/onboarding-steps';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -39,8 +45,18 @@ function initials(name: string | undefined): string {
  */
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const autoOpenedRef = useRef(false);
+
+  useEffect(() => {
+    if (user && !hasCompletedOnboarding(user.id) && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      const timer = window.setTimeout(() => setTourOpen(true), 600);
+      return () => window.clearTimeout(timer);
+    }
+  }, [user]);
 
   async function handleLogout(): Promise<void> {
     await logout();
@@ -50,11 +66,9 @@ export function AppLayout() {
   const sidebar = (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 px-5 py-5">
-        <div className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/30">
-          <Gavel className="size-5" />
-        </div>
+        <Logo size={40} />
         <div className="leading-tight">
-          <span className="block text-lg font-semibold tracking-tight">BotLeilão</span>
+          <span className="block text-lg font-semibold tracking-tight">LanceZap</span>
           <span className="block text-xs text-muted-foreground">Painel de leilões</span>
         </div>
       </div>
@@ -92,25 +106,68 @@ export function AppLayout() {
             )}
           </NavLink>
         ))}
+
+        {user?.role === 'SUPER_ADMIN' && (
+          <>
+            <p className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              Plataforma
+            </p>
+            <NavLink
+              to="/painel/assinaturas"
+              onClick={() => setSidebarOpen(false)}
+              className={({ isActive }) =>
+                cn(
+                  'group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-sidebar-accent font-semibold text-sidebar-accent-foreground'
+                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <span
+                    className={cn(
+                      'absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-primary transition-opacity',
+                      isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-40',
+                    )}
+                  />
+                  <CreditCard className="size-4" />
+                  Assinaturas
+                </>
+              )}
+            </NavLink>
+          </>
+        )}
       </nav>
 
-      <div className="mx-3 mb-3 flex items-center gap-3 rounded-xl border bg-card/60 p-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
-          {initials(user?.name)}
-        </div>
-        <div className="min-w-0 flex-1 leading-tight">
-          <p className="truncate text-sm font-medium text-card-foreground">{user?.name}</p>
-          <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8 text-muted-foreground hover:text-destructive"
-          onClick={() => void handleLogout()}
-          aria-label="Sair"
+      <div className="mx-3 mb-3 space-y-2">
+        <button
+          onClick={() => setTourOpen(true)}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
         >
-          <LogOut className="size-4" />
-        </Button>
+          <HelpCircle className="size-4" />
+          Guia do sistema
+        </button>
+
+        <div className="flex items-center gap-3 rounded-xl border bg-card/60 p-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+            {initials(user?.name)}
+          </div>
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="truncate text-sm font-medium text-card-foreground">{user?.name}</p>
+            <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-destructive"
+            onClick={() => void handleLogout()}
+            aria-label="Sair"
+          >
+            <LogOut className="size-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -157,10 +214,7 @@ export function AppLayout() {
           </Button>
 
           <div className="flex items-center gap-2 lg:hidden">
-            <div className="flex size-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
-              <Gavel className="size-4" />
-            </div>
-            <span className="text-sm font-semibold">BotLeilão</span>
+            <Logo size={24} />
           </div>
 
           <div className="ml-auto flex items-center gap-1">
@@ -187,6 +241,13 @@ export function AppLayout() {
           </SubscriptionGate>
         </main>
       </div>
+
+      {user && (
+        <>
+          <OnboardingTour open={tourOpen} userId={user.id} onOpenChange={setTourOpen} />
+          <OnboardingSpotlight userId={user.id} />
+        </>
+      )}
     </div>
   );
 }

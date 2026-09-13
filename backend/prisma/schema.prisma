@@ -279,6 +279,8 @@ model Auction {
   status        AuctionStatus @default(OPEN)
   startedAt     DateTime      @default(now())
   endsAt        DateTime?     // próximo deadline (lastBidAt + duration)
+  scheduledEndAt DateTime?    // prazo fixo de encerramento definido pelo painel após o início
+  minBidStep    Decimal?      @db.Decimal(10, 2) // incremento mínimo por lance (ex.: R$ 1,00)
   closedAt      DateTime?
   winnerBidId   String?  @unique
   paymentStatus PaymentStatus @default(PENDING)
@@ -304,6 +306,9 @@ model AuctionEvent {
   description     String?
   groupId         String?
   periodicStatusMinutes Int?
+  scheduledStartAt DateTime? // início automático da lista no grupo (agendado)
+  scheduledEndAt   DateTime? // término automático do leilão (agendado)
+  minBidStep       Decimal?  @db.Decimal(10, 2) // incremento mínimo por lance aplicado aos itens
   status          AuctionEventStatus @default(OPEN)
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt

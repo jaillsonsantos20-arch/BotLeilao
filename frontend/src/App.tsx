@@ -1,7 +1,8 @@
 import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/app-layout';
-import { GuestRoute, ProtectedRoute } from '@/components/layout/route-guards';
+import { GuestRoute, ProtectedRoute, RoleRoute } from '@/components/layout/route-guards';
 import { AuctionsPage } from '@/pages/auctions/auctions';
+import { AdminSubscriptionsPage } from '@/pages/admin/subscriptions';
 import { ForgotPasswordPage } from '@/pages/auth/forgot-password';
 import { LoginPage } from '@/pages/auth/login';
 import { RegisterPage } from '@/pages/auth/register';
@@ -72,6 +73,14 @@ export default function App() {
         <Route path="leiloes" element={<AuctionsPage />} />
         <Route path="whatsapp" element={<WhatsAppPage />} />
         <Route path="seguranca" element={<SecurityPage />} />
+        <Route
+          path="assinaturas"
+          element={
+            <RoleRoute role="SUPER_ADMIN">
+              <AdminSubscriptionsPage />
+            </RoleRoute>
+          }
+        />
       </Route>
 
       <Route path="*" element={<NotFoundPage />} />

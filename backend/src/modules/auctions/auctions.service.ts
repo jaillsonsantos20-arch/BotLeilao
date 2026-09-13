@@ -65,6 +65,7 @@ export class AuctionsService {
           auctionEventId: input.auctionEventId ?? null,
           status: AuctionStatus.OPEN,
           startedAt: now,
+          minBidStep: input.minBidStep != null ? new Decimal(input.minBidStep) : null,
           endsAt: new Date(now.getTime() + input.durationSeconds * 1000),
         },
       });
@@ -145,16 +146,24 @@ export class AuctionsService {
       const minimum =
         currentMax._max.amount !== null ? currentMax._max.amount : auction.initialValue;
       const isFirstBid = currentMax._max.amount === null;
+      const step = auction.minBidStep;
+      const hasStep = step != null && step.gt(0);
 
+      // Com incremento mínimo definido, o lance seguinte precisa ser no mínimo
+      // "atual + incremento" (ex.: atual R$ 50,00 e incremento R$ 1,00 => >= 51,00).
       const valid = isFirstBid
         ? bidAmount.gte(auction.initialValue)
-        : bidAmount.gt(currentMax._max.amount!);
+        : hasStep
+          ? bidAmount.gte(currentMax._max.amount!.plus(step))
+          : bidAmount.gt(currentMax._max.amount!);
 
       if (!valid) {
         throw new BadRequestException(
           isFirstBid
             ? `O primeiro lance deve ser igual ou maior que R$ ${auction.initialValue.toString()}.`
-            : `O lance deve ser maior que o atual (R$ ${minimum.toString()}).`,
+            : hasStep
+              ? `O lance deve ser no mínimo R$ ${step.toString()} acima do atual (R$ ${minimum.toString()}).`
+              : `O lance deve ser maior que o atual (R$ ${minimum.toString()}).`,
         );
       }
 
@@ -174,7 +183,13 @@ export class AuctionsService {
         },
       });
 
-      const endsAt = new Date(Date.now() + auction.durationSeconds * 1000);
+      // Prazo fixo agendado (painel) não é estendido por lances: o item encerra
+      // no horário determinado mesmo com lances novos no meio.
+      const endsAt = auction.scheduledEndAt
+        ? auction.scheduledEndAt
+        : auction.durationSeconds > 0
+          ? new Date(Date.now() + auction.durationSeconds * 1000)
+          : auction.endsAt;
       const updated = await tx.auction.update({
         where: { id: auction.id },
         data: { endsAt },
@@ -299,12 +314,11 @@ export class AuctionsService {
    * após reinício do servidor.
    */
   async processExpiredAuctions(): Promise<Auction[]> {
-    // Itens de uma lista (leilão de evento) NÃO são encerrados pelo prazo:
-    // permanecem em andamento até o administrador finalizar no painel.
+    // Inclui itens de lista (evento): cada item tem prazo próprio e é encerrado
+    // automaticamente quando esgota (recuperação pós-restart do servidor).
     const expired = await this.prisma.auction.findMany({
       where: {
         status: AuctionStatus.OPEN,
-        auctionEventId: null,
         endsAt: { lte: new Date() },
       },
       include: {

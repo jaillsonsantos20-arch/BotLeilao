@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Check, Gavel, Loader2 } from 'lucide-react';
+import { Check, Loader2 } from 'lucide-react';
+import { Logo } from '@/components/ui/logo';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/stores/auth';
 import { api } from '@/lib/api';
@@ -62,15 +63,13 @@ export function RegisterPage() {
   return (
     <div className="flex min-h-screen flex-col items-center bg-muted/40 p-4">
       <div className="w-full max-w-2xl">
-        <div className="mb-6 mt-6 flex flex-col items-center gap-2">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/30">
-            <Gavel className="size-6" />
+<div className="mb-6 mt-6 flex flex-col items-center gap-2">
+            <Logo size={48} />
+            <h1 className="text-xl font-semibold tracking-tight">Criar conta</h1>
+            <p className="text-sm text-muted-foreground">
+              Escolha o plano e comece a leiloar — teste grátis por 24 horas.
+            </p>
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">Criar conta</h1>
-          <p className="text-sm text-muted-foreground">
-            Escolha o plano e comece a leiloar — teste grátis por 24 horas.
-          </p>
-        </div>
 
         <Card>
           <CardHeader>

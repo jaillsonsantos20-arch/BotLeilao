@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Gavel, Loader2, RefreshCw } from 'lucide-react';
+import { Check, Copy, Loader2, RefreshCw } from 'lucide-react';
+import { Logo } from '@/components/ui/logo';
 import { api } from '@/lib/api';
 import type { ApiEnvelope, PaymentRecord, PixPayment, Subscription } from '@/types/api';
 import { Button } from '@/components/ui/button';
@@ -79,8 +80,8 @@ export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
       <div className="w-full max-w-md">
         <Card>
           <CardHeader className="text-center">
-            <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/30">
-              <Gavel className="size-6" />
+            <div className="mx-auto">
+              <Logo size={48} />
             </div>
             <CardTitle className="text-lg">Sua assinatura precisa ser renovada</CardTitle>
             <CardDescription>

@@ -14,8 +14,6 @@ import { AuctionEngine } from '../whatsapp/auction.engine';
 import { WhatsAppClientManager } from '../whatsapp/whatsapp-client.manager';
 import { CreateItemDto, StartItemAuctionDto } from './dto/item.dto';
 
-export const ITEM_DEFAULT_DURATION_SECONDS = 120;
-
 /**
  * Cadastro de itens para leilão.
  *
@@ -37,8 +35,8 @@ export class ItemsService {
     if (dto.initialValue <= 0) {
       throw new BadRequestException('O valor inicial deve ser maior que zero.');
     }
-    if (dto.durationSeconds !== undefined && dto.durationSeconds < 10) {
-      throw new BadRequestException('A duração mínima do leilão é de 10 segundos.');
+    if (dto.durationMinutes !== undefined && dto.durationMinutes < 1) {
+      throw new BadRequestException('A duração mínima do leilão é de 1 minuto.');
     }
     if (dto.auctionEventId) {
       await this.auctionEventsService.ensureOpen(tenantId, dto.auctionEventId);
@@ -52,7 +50,7 @@ export class ItemsService {
         description: dto.description ?? null,
         imageUrl: dto.imageUrl ?? null,
         initialValue: new Decimal(dto.initialValue),
-        durationSeconds: dto.durationSeconds ?? ITEM_DEFAULT_DURATION_SECONDS,
+        durationSeconds: dto.durationMinutes !== undefined ? dto.durationMinutes * 60 : 0,
       },
     });
   }
@@ -143,7 +141,8 @@ export class ItemsService {
       auctionEventId: item.auctionEventId ?? undefined,
       productName: item.name,
       initialValue: Number(item.initialValue),
-      durationSeconds: dto.durationSeconds ?? item.durationSeconds,
+      durationSeconds:
+      dto.durationMinutes !== undefined ? dto.durationMinutes * 60 : item.durationSeconds,
       startedBy,
     });
 

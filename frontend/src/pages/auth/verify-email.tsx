@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Check, Gavel, Loader2, X } from 'lucide-react';
+import { Check, Loader2, X } from 'lucide-react';
+import { Logo } from '@/components/ui/logo';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -8,11 +9,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 export function VerifyEmailPage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token') ?? '';
-  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>(() => (token ? 'loading' : 'error'));
 
   useEffect(() => {
     if (!token) {
-      setStatus('error');
       return;
     }
     api
@@ -24,12 +24,10 @@ export function VerifyEmailPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center gap-2">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Gavel className="size-6" />
+<div className="mb-6 flex flex-col items-center gap-2">
+            <Logo size={48} />
+            <h1 className="text-xl font-semibold tracking-tight">LanceZap</h1>
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">BotLeilão</h1>
-        </div>
 
         <Card>
           <CardHeader>

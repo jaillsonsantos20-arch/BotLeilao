@@ -46,7 +46,7 @@ async function bootstrap(): Promise<void> {
   );
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('BotLeilão API')
+    .setTitle('LanceZap API')
     .setDescription(
       'SaaS de leilões via WhatsApp — autenticação JWT, multi-tenant, bot integrado.',
     )

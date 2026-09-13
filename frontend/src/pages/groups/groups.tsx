@@ -90,7 +90,7 @@ export function GroupsPage() {
         description="Vincule grupos do WhatsApp para iniciar leilões."
         actions={
           <>
-            <Button variant="outline" onClick={() => generateLinkCode.mutate()}>
+            <Button data-tour-target="link-code" variant="outline" onClick={() => generateLinkCode.mutate()}>
               {generateLinkCode.isPending ? (
                 <Loader2 className="animate-spin" />
               ) : (
@@ -98,7 +98,7 @@ export function GroupsPage() {
               )}
               Vincular por código
             </Button>
-            <Button onClick={() => setCreating((prev) => !prev)}>
+            <Button data-tour-target="new-group" onClick={() => setCreating((prev) => !prev)}>
               <Plus className="size-4" />
               Novo grupo
             </Button>
