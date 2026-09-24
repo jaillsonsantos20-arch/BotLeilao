@@ -226,10 +226,12 @@ function generateReportPdf(rows: Array<{
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
   const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 15;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(20);
+  doc.setTextColor(0);
   doc.text('Relatorio de Leiloes', margin, 20);
 
   doc.setFont('helvetica', 'normal');
@@ -240,7 +242,7 @@ function generateReportPdf(rows: Array<{
   doc.setTextColor(0);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12);
-  doc.text(`Total arrecadado: ${total}`, pageWidth - margin, 20, { align: 'right' });
+  doc.text(`Total: ${total}`, pageWidth - margin, 20, { align: 'right' });
   doc.setFontSize(10);
   doc.text(`${rows.length} ${rows.length === 1 ? 'item' : 'itens'}`, pageWidth - margin, 28, { align: 'right' });
 
@@ -259,16 +261,16 @@ function generateReportPdf(rows: Array<{
       5: { halign: 'right', fontStyle: 'bold' },
       6: { halign: 'right' },
     },
-    margin: { left: margin, right: margin },
-    didDrawPage: (data) => {
+    margin: { left: margin, right: margin, top: 36 },
+    didDrawPage: () => {
       const pageCount = doc.getNumberOfPages();
       doc.setFontSize(8);
       doc.setTextColor(150);
       doc.text(
-        `Pagina ${data.pageNumber} de ${pageCount}`,
-        pageWidth / 2,
-        doc.internal.pageSize.getHeight() - 8,
-        { align: 'center' },
+        `Pagina ${pageCount}`,
+        pageWidth - margin,
+        pageHeight - 8,
+        { align: 'right' },
       );
     },
   });
@@ -1850,7 +1852,8 @@ export function AuctionsPage() {
               {reportGenerated ? (
                 <>
                   <Button variant="outline" onClick={() => {
-                    const rows = filteredReportRows.map((row) => {
+                    const winningRows = filteredReportRows.filter((row) => row.auction?.winnerBid);
+                    const rows = winningRows.map((row) => {
                       const event = events.data?.find((e) => e.id === row.item.auctionEventId);
                       return {
                         itemName: row.item.name,
@@ -1858,11 +1861,14 @@ export function AuctionsPage() {
                         groupName: row.auction?.group?.name ?? '—',
                         winnerName: row.auction?.winnerBid?.participantName || row.auction?.winnerBid?.participantPhone || '—',
                         paymentMethod: row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—',
-                        finalValue: row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—',
+                        finalValue: formatCurrency(row.auction!.winnerBid!.amount),
                         date: row.auction ? formatDate(row.auction.startedAt) : '—',
                       };
                     });
-                    generateReportPdf(rows, formatCurrency(filteredReportTotal));
+                    const total = winningRows.reduce(
+                      (sum, row) => sum + Number(row.auction!.winnerBid!.amount), 0,
+                    );
+                    generateReportPdf(rows, formatCurrency(total));
                   }}>
                     <FileText className="size-4" />
                     Gerar PDF
