@@ -119,11 +119,12 @@ export class AuctionEventsService {
         ...(dto.scheduledEndAt !== undefined
           ? { scheduledEndAt: dto.scheduledEndAt ? new Date(dto.scheduledEndAt) : null }
           : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
       },
     });
   }
 
-  private assertSchedule(scheduledStartAt?: string, scheduledEndAt?: string): void {
+  private assertSchedule(scheduledStartAt?: string | null, scheduledEndAt?: string | null): void {
     if (
       scheduledStartAt &&
       scheduledEndAt &&

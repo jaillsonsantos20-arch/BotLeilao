@@ -1,5 +1,6 @@
+import { AuctionEventStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsNumber, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 
 export class CreateAuctionEventDto {
   @IsString()
@@ -52,6 +53,10 @@ export class UpdateAuctionEventDto {
   groupId?: string;
 
   @IsOptional()
+  @IsEnum(AuctionEventStatus, { message: 'Status deve ser OPEN ou CLOSED.' })
+  status?: AuctionEventStatus;
+
+  @IsOptional()
   @IsInt({ message: 'O intervalo do status deve ser um número inteiro de minutos.' })
   @Min(0, { message: 'O intervalo mínimo é 0 (somente sob demanda).' })
   @Max(1440, { message: 'O intervalo máximo é 24 horas.' })
@@ -65,11 +70,11 @@ export class UpdateAuctionEventDto {
 
   @IsOptional()
   @IsDateString({}, { message: 'O início agendado deve ser uma data válida.' })
-  scheduledStartAt?: string;
+  scheduledStartAt?: string | null;
 
   @IsOptional()
   @IsDateString({}, { message: 'O término agendado deve ser uma data válida.' })
-  scheduledEndAt?: string;
+  scheduledEndAt?: string | null;
 }
 
 /**

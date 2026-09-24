@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UploadedFile,
@@ -19,7 +20,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
-import { CreateItemDto, ListItemsQueryDto, StartItemAuctionDto } from './dto/item.dto';
+import { CreateItemDto, ListItemsQueryDto, StartItemAuctionDto, UpdateItemDto } from './dto/item.dto';
 import { ItemsService } from './items.service';
 
 const UPLOAD_ITEMS_DIR = join(process.cwd(), 'uploads', 'items');
@@ -132,6 +133,17 @@ export class ItemsController {
   @ApiOperation({ summary: 'Busca um item pelo id' })
   findById(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.itemsService.findById(user.tenantId, id);
+  }
+
+  @Patch(':id')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Edita um item cadastrado' })
+  update(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateItemDto,
+  ) {
+    return this.itemsService.update(user.tenantId, id, dto);
   }
 
   @Delete(':id')

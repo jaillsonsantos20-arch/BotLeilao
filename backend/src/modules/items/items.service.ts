@@ -114,6 +114,29 @@ export class ItemsService {
     await this.prisma.item.delete({ where: { id: item.id } });
   }
 
+  async update(tenantId: string, itemId: string, data: {
+    name?: string;
+    description?: string;
+    imageUrl?: string;
+    initialValue?: number;
+    order?: number;
+    durationMinutes?: number;
+  }): Promise<Item> {
+    const item = await this.findById(tenantId, itemId);
+    const updateData: Record<string, unknown> = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.description !== undefined) updateData.description = data.description;
+    if (data.imageUrl !== undefined) updateData.imageUrl = data.imageUrl;
+    if (data.initialValue !== undefined) updateData.initialValue = new Decimal(data.initialValue);
+    if (data.order !== undefined) updateData.order = data.order;
+    if (data.durationMinutes !== undefined) updateData.durationSeconds = data.durationMinutes * 60;
+
+    return this.prisma.item.update({
+      where: { id: item.id },
+      data: updateData,
+    });
+  }
+
   /**
    * Inicia o leilão do item em um grupo vinculado e o anuncia no WhatsApp.
    */

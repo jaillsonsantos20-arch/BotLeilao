@@ -12,6 +12,7 @@ import {
   ListChecks,
   Loader2,
   Package,
+  Pencil,
   Plus,
   RefreshCw,
   Trash2,
@@ -290,11 +291,23 @@ export function AuctionsPage() {
   const [viewBidsTarget, setViewBidsTarget] = useState<Auction | null>(null);
   const auctionBids = useAuctionBids(viewBidsTarget?.id ?? null);
 
+  const [editEventTarget, setEditEventTarget] = useState<any | null>(null);
+  const [editEventName, setEditEventName] = useState('');
+  const [editEventDescription, setEditEventDescription] = useState('');
+  const [editEventMinBidStep, setEditEventMinBidStep] = useState('');
+  const [editEventScheduledStart, setEditEventScheduledStart] = useState('');
+  const [editEventScheduledEnd, setEditEventScheduledEnd] = useState('');
+  const [editEventStatus, setEditEventStatus] = useState<'OPEN' | 'CLOSED'>('OPEN');
+  const [editEventError, setEditEventError] = useState<string | null>(null);
+
   const [editBidTarget, setEditBidTarget] = useState<any | null>(null);
   const [editBidAmount, setEditBidAmount] = useState('');
   const [editBidName, setEditBidName] = useState('');
   const [editBidPhone, setEditBidPhone] = useState('');
   const [editBidError, setEditBidError] = useState<string | null>(null);
+
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingItemName, setEditingItemName] = useState('');
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['auction-events'] });
@@ -498,6 +511,34 @@ export function AuctionsPage() {
       setEditBidError(null);
     },
     onError: (err) => setEditBidError(extractError(err, 'Falha ao atualizar o lance.')),
+  });
+
+  const updateEvent = useMutation({
+    mutationFn: async () => {
+      if (!editEventTarget) throw new Error('Selecione um leilão para editar.');
+      const data: Record<string, unknown> = {};
+      if (editEventName.trim()) data.name = editEventName.trim();
+      if (editEventDescription.trim()) data.description = editEventDescription.trim();
+      if (editEventMinBidStep.trim()) data.minBidStep = parseFloat(editEventMinBidStep.replace(',', '.'));
+      else data.minBidStep = null;
+      data.scheduledStartAt = editEventScheduledStart || null;
+      data.scheduledEndAt = editEventScheduledEnd || null;
+      data.status = editEventStatus;
+      await api.patch(`/auction-events/${editEventTarget.id}`, data);
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditEventTarget(null);
+      setEditEventError(null);
+    },
+    onError: (err) => setEditEventError(extractError(err, 'Falha ao atualizar o leilão.')),
+  });
+
+  const updateItem = useMutation({
+    mutationFn: async (params: { itemId: string; name: string }) => {
+      await api.patch(`/items/${params.itemId}`, { name: params.name });
+    },
+    onSuccess: () => invalidate(),
   });
 
   function handleCreateEvent(event: FormEvent): void {
@@ -925,9 +966,27 @@ export function AuctionsPage() {
                   <CardDescription>{selectedEvent.description}</CardDescription>
                 )}
               </div>
-              <Button variant="outline" size="sm" onClick={() => setSelectedEventId(null)}>
-                Fechar
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setEditEventTarget(selectedEvent);
+                    setEditEventName(selectedEvent.name);
+                    setEditEventDescription(selectedEvent.description ?? '');
+                    setEditEventMinBidStep(selectedEvent.minBidStep ? String(Number(selectedEvent.minBidStep)) : '');
+                    setEditEventScheduledStart(selectedEvent.scheduledStartAt ?? '');
+                    setEditEventScheduledEnd(selectedEvent.scheduledEndAt ?? '');
+                    setEditEventStatus(selectedEvent.status);
+                    setEditEventError(null);
+                  }}
+                >
+                  Editar
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setSelectedEventId(null)}>
+                  Fechar
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -1169,7 +1228,47 @@ export function AuctionsPage() {
                               <div className="flex items-center gap-3">
                                 <ItemThumb item={item} />
                                 <div>
-                                  <div className="font-medium">{item.name}</div>
+                                  {editingItemId === item.id ? (
+                                    <div className="flex items-center gap-1">
+                                      <Input
+                                        className="h-7 w-48 text-sm"
+                                        value={editingItemName}
+                                        onChange={(e) => setEditingItemName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter' && editingItemName.trim()) {
+                                            updateItem.mutate({ itemId: item.id, name: editingItemName.trim() });
+                                            setEditingItemId(null);
+                                          }
+                                          if (e.key === 'Escape') setEditingItemId(null);
+                                        }}
+                                        autoFocus
+                                      />
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 px-2"
+                                        onClick={() => {
+                                          if (editingItemName.trim()) {
+                                            updateItem.mutate({ itemId: item.id, name: editingItemName.trim() });
+                                            setEditingItemId(null);
+                                          }
+                                        }}
+                                      >
+                                        OK
+                                      </Button>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className="group flex cursor-pointer items-center gap-1"
+                                      onClick={() => {
+                                        setEditingItemId(item.id);
+                                        setEditingItemName(item.name);
+                                      }}
+                                    >
+                                      <span className="font-medium">{item.name}</span>
+                                      <Pencil className="size-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                                    </div>
+                                  )}
                                   {item.description && (
                                     <div className="max-w-xs truncate text-xs text-muted-foreground">
                                       {item.description}
@@ -2032,6 +2131,101 @@ export function AuctionsPage() {
               ) : (
                 <p className="text-sm text-muted-foreground text-center">Nenhum lance registrado.</p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editEventTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="text-lg font-semibold">Editar Leilão</h3>
+                <p className="text-sm text-muted-foreground">
+                  Altere as configurações do leilão.
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setEditEventTarget(null)}>
+                ✕
+              </Button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div>
+                <Label htmlFor="edit-event-name">Nome</Label>
+                <Input
+                  id="edit-event-name"
+                  value={editEventName}
+                  onChange={(e) => setEditEventName(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-event-desc">Descrição</Label>
+                <Textarea
+                  id="edit-event-desc"
+                  value={editEventDescription}
+                  onChange={(e) => setEditEventDescription(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="edit-event-min-bid-step">Incremento mínimo (R$)</Label>
+                  <Input
+                    id="edit-event-min-bid-step"
+                    type="number"
+                    step="0.01"
+                    value={editEventMinBidStep}
+                    onChange={(e) => setEditEventMinBidStep(e.target.value)}
+                    placeholder="0 = sem mínimo"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-event-status">Status</Label>
+                  <select
+                    id="edit-event-status"
+                    className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                    value={editEventStatus}
+                    onChange={(e) => setEditEventStatus(e.target.value as 'OPEN' | 'CLOSED')}
+                  >
+                    <option value="OPEN">Em andamento</option>
+                    <option value="CLOSED">Encerrado</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="edit-event-start">Início agendado</Label>
+                  <Input
+                    id="edit-event-start"
+                    type="datetime-local"
+                    value={editEventScheduledStart ? editEventScheduledStart.slice(0, 16) : ''}
+                    onChange={(e) => setEditEventScheduledStart(e.target.value ? new Date(e.target.value).toISOString() : '')}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-event-end">Término agendado</Label>
+                  <Input
+                    id="edit-event-end"
+                    type="datetime-local"
+                    value={editEventScheduledEnd ? editEventScheduledEnd.slice(0, 16) : ''}
+                    onChange={(e) => setEditEventScheduledEnd(e.target.value ? new Date(e.target.value).toISOString() : '')}
+                  />
+                </div>
+              </div>
+              {editEventError && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {editEventError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t p-4">
+              <Button variant="outline" onClick={() => setEditEventTarget(null)}>
+                Cancelar
+              </Button>
+              <Button disabled={updateEvent.isPending} onClick={() => updateEvent.mutate()}>
+                {updateEvent.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Salvar
+              </Button>
             </div>
           </div>
         </div>
