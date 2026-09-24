@@ -229,27 +229,32 @@ function generateReportPdf(rows: Array<{
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 15;
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(20);
-  doc.setTextColor(0);
-  doc.text('Relatorio de Leiloes', margin, 20);
+  function drawHeader(d: jsPDF) {
+    d.setFont('helvetica', 'bold');
+    d.setFontSize(20);
+    d.setTextColor(0);
+    d.text('Relatorio de Leiloes', margin, 20);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(10);
-  doc.setTextColor(100);
-  doc.text(`LanceZap - ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, margin, 28);
+    d.setFont('helvetica', 'normal');
+    d.setFontSize(10);
+    d.setTextColor(100);
+    d.text(`LanceZap - ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, margin, 28);
 
-  doc.setTextColor(0);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
-  doc.text(`Total: ${total}`, pageWidth - margin, 20, { align: 'right' });
-  doc.setFontSize(10);
-  doc.text(`${rows.length} ${rows.length === 1 ? 'item' : 'itens'}`, pageWidth - margin, 28, { align: 'right' });
+    d.setTextColor(0);
+    d.setFont('helvetica', 'bold');
+    d.setFontSize(12);
+    d.text(`Total: ${total}`, pageWidth - margin, 20, { align: 'right' });
+    d.setFontSize(10);
+    d.text(`${rows.length} ${rows.length === 1 ? 'item' : 'itens'}`, pageWidth - margin, 28, { align: 'right' });
 
-  doc.setDrawColor(0);
-  doc.setLineWidth(0.5);
-  doc.line(margin, 32, pageWidth - margin, 32);
+    d.setDrawColor(0);
+    d.setLineWidth(0.5);
+    d.line(margin, 32, pageWidth - margin, 32);
+  }
 
+  drawHeader(doc);
+
+  let pageCounter = 1;
   autoTable(doc, {
     startY: 36,
     head: [['Item', 'Leilao', 'Grupo', 'Vencedor', 'Pagamento', 'Valor final', 'Data']],
@@ -262,6 +267,9 @@ function generateReportPdf(rows: Array<{
       6: { halign: 'right' },
     },
     margin: { left: margin, right: margin, top: 36 },
+    didDrawPage: () => {
+      pageCounter++;
+    },
   });
 
   const pageCount = doc.getNumberOfPages();
