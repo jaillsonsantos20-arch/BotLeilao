@@ -496,20 +496,29 @@ export class AuctionsService {
       throw new ConflictException('Só é possível excluir lances de leilões em andamento.');
     }
 
+    const auctionId = bid.auctionId;
     const wasWinner = bid.auction.winnerBidId === bidId;
 
-    await this.prisma.bid.delete({ where: { id: bidId } });
-
+    // 1. Limpa winnerBidId antes de deletar (evita violação de FK)
     if (wasWinner) {
-      const nextWinner = await this.prisma.bid.findFirst({
-        where: { auctionId: bid.auctionId },
-        orderBy: { amount: 'desc' },
-      });
       await this.prisma.auction.update({
-        where: { id: bid.auctionId },
-        data: { winnerBidId: nextWinner?.id ?? null },
+        where: { id: auctionId },
+        data: { winnerBidId: null },
       });
     }
+
+    // 2. Deleta o lance
+    await this.prisma.bid.delete({ where: { id: bidId } });
+
+    // 3. Recalcula o vencedor entre os lances restantes
+    const nextWinner = await this.prisma.bid.findFirst({
+      where: { auctionId },
+      orderBy: { amount: 'desc' },
+    });
+    await this.prisma.auction.update({
+      where: { id: auctionId },
+      data: { winnerBidId: nextWinner?.id ?? null },
+    });
 
     return { success: true };
   }

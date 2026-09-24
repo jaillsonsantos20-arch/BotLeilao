@@ -485,7 +485,7 @@ export function AuctionsPage() {
       const data: Record<string, unknown> = {};
       if (editProductName.trim()) data.productName = editProductName.trim();
       if (editInitialValue.trim()) data.initialValue = parseFloat(editInitialValue.replace(',', '.'));
-      if (editDuration.trim()) data.durationSeconds = parseInt(editDuration, 10) * 60;
+      if (editDuration.trim() && parseInt(editDuration, 10) > 0) data.durationSeconds = parseInt(editDuration, 10) * 60;
       if (editMinBidStep.trim()) data.minBidStep = parseFloat(editMinBidStep.replace(',', '.'));
       await api.patch(`/auctions/${editTarget.id}`, data);
     },

@@ -103,7 +103,7 @@ export class UpdateItemDto {
 
   @IsOptional()
   @IsInt({ message: 'O tempo do leilão deve ser um número inteiro de minutos.' })
-  @Min(1, { message: 'A duração mínima é de 1 minuto.' })
+  @Min(0, { message: 'A duração mínima é de 0 minutos.' })
   @Max(1440, { message: 'A duração máxima é de 1440 minutos (24 horas).' })
   durationMinutes?: number;
 }
