@@ -1724,15 +1724,24 @@ export function AuctionsPage() {
                       </p>
                     </div>
                   </div>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, tableLayout: 'fixed' }}>
+                    <colgroup>
+                      <col style={{ width: '22%' }} />
+                      <col style={{ width: '18%' }} />
+                      <col style={{ width: '16%' }} />
+                      <col style={{ width: '18%' }} />
+                      <col style={{ width: '12%' }} />
+                      <col style={{ width: '8%' }} />
+                      <col style={{ width: '6%' }} />
+                    </colgroup>
                     <thead>
                       <tr style={{ backgroundColor: '#f0f0f0' }}>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Item</th>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Leilão</th>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Grupo</th>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Vencedor</th>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Pagamento</th>
-                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>Valor final</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700, overflow: 'hidden' }}>Item</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700, overflow: 'hidden' }}>Leilão</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700, overflow: 'hidden' }}>Grupo</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700, overflow: 'hidden' }}>Vencedor</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700, overflow: 'hidden' }}>Pagamento</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>Valor</th>
                         <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>Data</th>
                       </tr>
                     </thead>
@@ -1741,21 +1750,21 @@ export function AuctionsPage() {
                         const event = events.data?.find((e) => e.id === row.item.auctionEventId);
                         return (
                           <tr key={row.item.id} style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#fafafa' }}>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>{row.item.name}</td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>{event?.name ?? '—'}</td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.item.name}</td>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{event?.name ?? '—'}</td>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {row.auction?.group?.name ?? '—'}
                             </td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {row.auction?.winnerBid?.participantName || '—'}
                             </td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—'}
                             </td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right', fontWeight: 600 }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
                               {row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—'}
                             </td>
-                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right' }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right', whiteSpace: 'nowrap', fontSize: 10 }}>
                               {row.auction ? formatDate(row.auction.startedAt) : '—'}
                             </td>
                           </tr>
