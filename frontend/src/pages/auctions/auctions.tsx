@@ -250,7 +250,7 @@ function generateReportPdf(rows: Array<{
   doc.setLineWidth(0.5);
   doc.line(margin, 32, pageWidth - margin, 32);
 
-  const finalY = (autoTable(doc, {
+  autoTable(doc, {
     startY: 36,
     head: [['Item', 'Leilao', 'Grupo', 'Vencedor', 'Pagamento', 'Valor final', 'Data']],
     body: rows.map((r) => [r.itemName, r.eventName, r.groupName, r.winnerName, r.paymentMethod, r.finalValue, r.date]),
@@ -262,8 +262,7 @@ function generateReportPdf(rows: Array<{
       6: { halign: 'right' },
     },
     margin: { left: margin, right: margin, top: 36 },
-    didDrawPage: () => {},
-  }) as unknown as number);
+  });
 
   const pageCount = doc.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
