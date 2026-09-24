@@ -25,5 +25,21 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     throw new Error('JWT_REFRESH_SECRET deve ter no mínimo 16 caracteres.');
   }
 
+  // Em produção o gateway precisa estar completo, senão o paywall nunca
+  // libera sozinho (webhook + reconciliação dependem dessas vars).
+  if (String(config.NODE_ENV).toLowerCase() === 'production') {
+    const missingMp = [
+      'MERCADOPAGO_ACCESS_TOKEN',
+      'MERCADOPAGO_NOTIFICATION_URL',
+      'MERCADOPAGO_WEBHOOK_SECRET',
+    ].filter((key) => !config[key]);
+    if (missingMp.length > 0) {
+      throw new Error(
+        `Mercado Pago incompleto em produção — ausentes: ${missingMp.join(', ')}. ` +
+          `Configure no .env (notification_url deve ser https://.../api/payments/webhook).`,
+      );
+    }
+  }
+
   return config;
 }

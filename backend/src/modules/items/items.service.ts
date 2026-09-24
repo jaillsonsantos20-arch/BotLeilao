@@ -33,7 +33,12 @@ export class ItemsService {
     private readonly planLimits: PlanLimitsService,
   ) {}
 
-  async create(tenantId: string, dto: CreateItemDto, actorRole: Role = Role.ADMIN): Promise<Item> {
+  async create(
+    tenantId: string,
+    dto: CreateItemDto,
+    actorRole: Role = Role.ADMIN,
+    actorEmail?: string | null,
+  ): Promise<Item> {
     if (dto.initialValue <= 0) {
       throw new BadRequestException('O valor inicial deve ser maior que zero.');
     }
@@ -42,7 +47,12 @@ export class ItemsService {
     }
     if (dto.auctionEventId) {
       await this.auctionEventsService.ensureOpen(tenantId, dto.auctionEventId);
-      await this.planLimits.assertCanAddItemToEvent(tenantId, dto.auctionEventId, actorRole);
+      await this.planLimits.assertCanAddItemToEvent(
+        tenantId,
+        dto.auctionEventId,
+        actorRole,
+        actorEmail,
+      );
     }
 
     return this.prisma.item.create({

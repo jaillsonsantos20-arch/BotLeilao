@@ -44,6 +44,24 @@ export class PaymentsService {
     this.accessToken = mp.accessToken;
     this.notificationUrl = mp.notificationUrl;
     this.webhookSecret = mp.webhookSecret;
+
+    if (!this.accessToken) {
+      this.logger.warn(
+        'MERCADOPAGO_ACCESS_TOKEN não configurado — geração de PIX vai falhar. Configure no .env.',
+      );
+    }
+    if (!this.notificationUrl) {
+      this.logger.warn(
+        'MERCADOPAGO_NOTIFICATION_URL não configurado — webhook automático desativado. ' +
+          'Ativação vai depender da verificação manual (POST /payments/sync). ' +
+          'Em dev use um túnel HTTPS (ex.: ngrok) apontando para /api/payments/webhook.',
+      );
+    }
+    if (!this.webhookSecret) {
+      this.logger.warn(
+        'MERCADOPAGO_WEBHOOK_SECRET não configurado — webhooks serão rejeitados (fail-closed).',
+      );
+    }
   }
 
   /**
@@ -54,12 +72,21 @@ export class PaymentsService {
     payerEmail: string,
     planId?: string,
   ): Promise<{ internalId: string; externalId: string; status: string; transactionData: PixTransactionData }> {
+    if (!this.accessToken) {
+      throw new ServiceUnavailableException(
+        'Gateway de pagamento não configurado. Contate o suporte.',
+      );
+    }
+
     const subscription = await this.resolveSubscription(tenantId, planId);
     if (!subscription) {
       throw new BadRequestException('Nenhum plano encontrado para gerar a cobrança.');
     }
 
     const amount = Number(subscription.plan.price);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('Valor do plano inválido para gerar a cobrança.');
+    }
     const externalId = randomUUID();
 
     const body: Record<string, unknown> = {
@@ -120,19 +147,27 @@ export class PaymentsService {
 
   /**
    * Consulta o pagamento no MP e, se aprovado, ativa a assinatura.
+   *
+   * Status intermediários do MP (pending/in_process/authorized/in_mediation)
+   * mantêm o `Payment` como PENDING — só marcam FAILED os status finais de
+   * não-pagamento (rejected/cancelled/refunded/charged_back/expired).
+   * Isso permite que o frontend faça polling de reconciliação sem invalidar
+   * cobranças ainda não pagas.
    */
-  async confirmPayment(mpPaymentId: string | number): Promise<{ activated: boolean }> {
+  async confirmPayment(
+    mpPaymentId: string | number,
+  ): Promise<{ activated: boolean; status: string }> {
     const payment = await this.prisma.payment.findFirst({
       where: { externalId: String(mpPaymentId) },
     });
 
     if (!payment) {
       this.logger.warn(`Webhook recebido para pagamento desconhecido: ${mpPaymentId}`);
-      return { activated: false };
+      return { activated: false, status: 'unknown' };
     }
 
     if (payment.status === PaymentStatus.PAID) {
-      return { activated: false };
+      return { activated: false, status: 'approved' };
     }
 
     let mpPayment: any;
@@ -143,30 +178,72 @@ export class PaymentsService {
       throw new ServiceUnavailableException('Falha ao consultar o pagamento no gateway.');
     }
 
-    if (mpPayment?.status !== 'approved') {
+    const mpStatus = String(mpPayment?.status ?? '').toLowerCase();
+
+    if (mpStatus === 'approved') {
+      await this.prisma.$transaction([
+        this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: PaymentStatus.PAID, paidAt: new Date() },
+        }),
+        this.prisma.subscription.updateMany({
+          where: { id: payment.subscriptionId ?? undefined },
+          data: {
+            status: SubscriptionStatus.ACTIVE,
+            currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            canceledAt: null,
+          },
+        }),
+      ]);
+
+      return { activated: true, status: mpStatus };
+    }
+
+    if (['rejected', 'cancelled', 'canceled', 'refunded', 'charged_back', 'expired'].includes(mpStatus)) {
       await this.prisma.payment.update({
         where: { id: payment.id },
         data: { status: PaymentStatus.FAILED },
       });
-      return { activated: false };
+      return { activated: false, status: mpStatus };
     }
 
-    await this.prisma.$transaction([
-      this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { status: PaymentStatus.PAID, paidAt: new Date() },
-      }),
-      this.prisma.subscription.updateMany({
-        where: { id: payment.subscriptionId ?? undefined },
-        data: {
-          status: SubscriptionStatus.ACTIVE,
-          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-          canceledAt: null,
-        },
-      }),
-    ]);
+    // pending / authorized / in_process / in_mediation / etc: mantém PENDING.
+    return { activated: false, status: mpStatus || 'pending' };
+  }
 
-    return { activated: true };
+  /**
+   * Reconciliação manual (fallback quando o webhook não chega — ex.:
+   * `notification_url` não configurada ou ambiente local sem URL pública).
+   *
+   * Consulta no MP os últimos pagamentos PENDING do tenant e ativa a
+   * assinatura se algum tiver sido aprovado. Chamado pelo frontend via
+   * `POST /payments/sync` (botão "Já paguei").
+   */
+  async syncPendingPayments(
+    tenantId: string,
+  ): Promise<{ activated: boolean; checked: number }> {
+    const pendings = await this.prisma.payment.findMany({
+      where: { tenantId, status: PaymentStatus.PENDING, externalId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    let activated = false;
+    for (const pending of pendings) {
+      try {
+        const result = await this.confirmPayment(pending.externalId as string);
+        if (result.activated) {
+          activated = true;
+          break;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Falha ao reconciliar pagamento ${pending.id}: ${String(error)}`,
+        );
+      }
+    }
+
+    return { activated, checked: pendings.length };
   }
 
   /**

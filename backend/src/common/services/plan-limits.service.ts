@@ -6,13 +6,15 @@ import { PrismaService } from '../database/prisma.service';
  * Aplica os limites do plano contratado pelo tenant (maxGroups/maxUsers/maxAuctions
  * e itens por lista/evento).
  *
- * Convenção de features:
- * - 'listas' = pode usar listas/eventos (ambos os planos têm).
- * - 'listas_ilimitadas' = sem teto de itens por lista (só Profissional).
- *   Sem essa feature, o teto é MAX_ITEMS_PER_LIST_BASIC (5).
+ * Convenção de features (definida pelo plano escolhido no landing):
+ * - 'listas' = pode usar listas/eventos.
+ * - 'listas_ilimitadas' = sem teto de itens por lista (ex.: Profissional).
+ *   Sem essa feature, o teto é MAX_ITEMS_PER_LIST_BASIC (5, ex.: Básico).
  *
- * Operadores da plataforma (SUPER_ADMIN) e tenants sem plano ativo/em trial
- * não são limitados — mantém o comportamento atual de contas demo/legadas.
+ * Exceções (itens ilimitados):
+ * - Operadores da plataforma (SUPER_ADMIN);
+ * - E-mails em UNLIMITED_ITEMS_EMAILS (ex.: admin@botleilao.com.br);
+ * - Tenants sem plano (demo/legados sem assinatura).
  */
 @Injectable()
 export class PlanLimitsService {
@@ -52,14 +54,25 @@ export class PlanLimitsService {
   }
 
   /**
-   * Teto de itens por lista no plano Básico. Profissional (com
-   * 'listas_ilimitadas') não tem teto.
+   * Teto de itens por lista nos planos sem a feature 'listas_ilimitadas'
+   * (ex.: plano Básico). Planos com 'listas_ilimitadas' não têm teto.
    */
   static readonly MAX_ITEMS_PER_LIST_BASIC = 5;
 
+  /**
+   * E-mails com itens por lista ilimitados, independente do plano.
+   * Pode ser estendido via env UNLIMITED_ITEMS_EMAILS (separados por vírgula).
+   */
+  static readonly UNLIMITED_ITEMS_EMAILS = ['admin@botleilao.com.br'];
+
   /** Retorna o teto de itens por lista do tenant (null = ilimitado). */
-  async getMaxItemsPerList(tenantId: string, actorRole: Role): Promise<number | null> {
+  async getMaxItemsPerList(
+    tenantId: string,
+    actorRole: Role,
+    actorEmail?: string | null,
+  ): Promise<number | null> {
     if (actorRole === Role.SUPER_ADMIN) return null;
+    if (this.isUnlimitedEmail(actorEmail)) return null;
     const plan = await this.getPlan(tenantId);
     if (!plan) return null;
     const features = (plan.features as unknown as string[]) ?? [];
@@ -72,15 +85,16 @@ export class PlanLimitsService {
     tenantId: string,
     eventId: string,
     actorRole: Role,
+    actorEmail?: string | null,
   ): Promise<void> {
-    const max = await this.getMaxItemsPerList(tenantId, actorRole);
+    const max = await this.getMaxItemsPerList(tenantId, actorRole, actorEmail);
     if (max === null) return;
     const current = await this.prisma.item.count({
       where: { tenantId, auctionEventId: eventId },
     });
     if (current >= max) {
       throw new BadRequestException(
-        `Limite do plano Básico: máximo ${max} itens por lista. Exclua um item ou faça upgrade para o Profissional.`,
+        `Limite do plano atingido: máximo ${max} itens por lista. Exclua um item ou faça upgrade de plano.`,
       );
     }
   }
@@ -117,5 +131,20 @@ export class PlanLimitsService {
       include: { plan: true },
     });
     return subscription?.plan ?? null;
+  }
+
+  /** E-mails isentos do teto de itens (comparação sem diferenciar maiúsculas). */
+  private isUnlimitedEmail(email?: string | null): boolean {
+    if (!email) return false;
+    const normalized = email.trim().toLowerCase();
+    const fromEnv = (process.env.UNLIMITED_ITEMS_EMAILS ?? '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    const allowed = new Set([
+      ...PlanLimitsService.UNLIMITED_ITEMS_EMAILS.map((entry) => entry.toLowerCase()),
+      ...fromEnv,
+    ]);
+    return allowed.has(normalized);
   }
 }

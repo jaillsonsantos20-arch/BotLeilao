@@ -137,7 +137,13 @@ export class AuctionEventsService {
    * Abre o evento como **lista** em um grupo: cria um leilão aberto por item
    * (todos simultâneos) e marca os itens como ON_AUCTION.
    */
-  async startList(tenantId: string, eventId: string, groupId: string): Promise<Auction[]> {
+  async startList(
+    tenantId: string,
+    eventId: string,
+    groupId: string,
+    actorRole: Role = Role.ADMIN,
+    actorEmail?: string | null,
+  ): Promise<Auction[]> {
     const event = await this.ensureOpen(tenantId, eventId);
     const group = await this.prisma.group.findFirst({
       where: { id: groupId, tenantId, isActive: true },
@@ -157,11 +163,11 @@ export class AuctionEventsService {
       throw new BadRequestException('Cadastre itens neste leilão antes de iniciar.');
     }
 
-    // Trava de segurança para listas que já existiam acima do teto.
-    const maxItems = await this.planLimits.getMaxItemsPerList(tenantId, Role.ADMIN);
+    // Trava de segurança para listas que já existiam acima do teto do plano.
+    const maxItems = await this.planLimits.getMaxItemsPerList(tenantId, actorRole, actorEmail);
     if (maxItems !== null && items.length > maxItems) {
       throw new BadRequestException(
-        `Limite do plano Básico: máximo ${maxItems} itens por lista. Exclua itens ou faça upgrade para o Profissional.`,
+        `Limite do plano atingido: máximo ${maxItems} itens por lista. Exclua itens ou faça upgrade de plano.`,
       );
     }
 

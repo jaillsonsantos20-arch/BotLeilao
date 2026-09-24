@@ -22,9 +22,12 @@ interface PaywallPageProps {
 export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
   const [pix, setPix] = useState<PixPayment | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const plan = subscription?.plan;
   const price = plan?.price ?? 0;
@@ -33,6 +36,9 @@ export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
+      }
+      if (syncRef.current) {
+        clearInterval(syncRef.current);
       }
     };
   }, []);
@@ -53,19 +59,64 @@ export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
 
   function startPolling(): void {
     if (pollRef.current) return;
+    // Leitura barata no banco local a cada 5s (webhook já teria marcado PAID).
     pollRef.current = setInterval(() => {
       api
         .get<ApiEnvelope<PaymentRecord[]>>('/payments/status')
         .then((response) => {
           const hasPaid = response.data.data.some((payment) => payment.status === 'PAID');
           if (hasPaid) {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
+            stopPolling();
             onPaid();
           }
         })
         .catch(() => undefined);
     }, 5000);
+
+    // Reconciliação ativa no Mercado Pago a cada 15s (fallback quando o
+    // webhook não chega — ex.: notification_url ausente ou localhost).
+    if (syncRef.current) return;
+    syncRef.current = setInterval(() => {
+      void syncPayments(false);
+    }, 15000);
+  }
+
+  function stopPolling(): void {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    if (syncRef.current) clearInterval(syncRef.current);
+    syncRef.current = null;
+  }
+
+  async function syncPayments(manual: boolean): Promise<void> {
+    if (manual) {
+      setChecking(true);
+      setError(null);
+      setInfo(null);
+    }
+    try {
+      const response = await api.post<
+        ApiEnvelope<{ activated: boolean; checked: number; payments: PaymentRecord[] }>
+      >('/payments/sync', {});
+      const { activated, checked, payments } = response.data.data;
+      const hasPaid = activated || payments.some((payment) => payment.status === 'PAID');
+      if (hasPaid) {
+        stopPolling();
+        onPaid();
+        return;
+      }
+      if (manual) {
+        setInfo(
+          checked > 0
+            ? 'Pagamento ainda não confirmado no Mercado Pago. Aguarde alguns segundos e tente de novo.'
+            : 'Nenhuma cobrança pendente encontrada. Gere um PIX primeiro.',
+        );
+      }
+    } catch (err) {
+      if (manual) setError(extractError(err));
+    } finally {
+      if (manual) setChecking(false);
+    }
   }
 
   async function copyCode(): Promise<void> {
@@ -102,6 +153,10 @@ export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
               <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
             )}
 
+            {info && (
+              <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">{info}</p>
+            )}
+
             {pix ? (
               <div className="space-y-4">
                 <div className="mx-auto w-fit rounded-2xl border p-3">
@@ -123,6 +178,15 @@ export function PaywallPage({ subscription, onPaid }: PaywallPageProps) {
                     {copied ? 'Copiado' : 'Copiar'}
                   </Button>
                 </div>
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() => void syncPayments(true)}
+                  disabled={checking}
+                >
+                  {checking && <Loader2 className="animate-spin" />}
+                  Já fiz o pagamento — verificar
+                </Button>
                 <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
                   <RefreshCw className="size-3 animate-spin" />
                   Aguardando confirmação do pagamento...

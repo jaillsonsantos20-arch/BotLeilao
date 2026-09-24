@@ -28,6 +28,18 @@ export class PaymentsController {
     return this.paymentsService.lastPayments(user.tenantId);
   }
 
+  @ApiBearerAuth()
+  @BypassTenantAccess()
+  @Post('sync')
+  @ApiOperation({
+    summary: 'Reconcilia pagamentos PENDING no Mercado Pago (fallback sem webhook)',
+  })
+  async sync(@CurrentUser() user: RequestUser) {
+    const result = await this.paymentsService.syncPendingPayments(user.tenantId);
+    const payments = await this.paymentsService.lastPayments(user.tenantId);
+    return { ...result, payments };
+  }
+
   @Public()
   @Post('webhook')
   @ApiOperation({ summary: 'Webhook do Mercado Pago (confirmação de pagamento)' })

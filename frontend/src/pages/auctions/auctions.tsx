@@ -52,6 +52,10 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { PageHeader } from '@/components/layout/page-header';
+import { useAuth } from '@/stores/auth';
+
+// E-mail com itens por lista ilimitados, independente do plano.
+const UNLIMITED_ITEMS_EMAIL = 'admin@botleilao.com.br';
 
 const ITEM_STATUS: Record<ItemStatus, { label: string; variant: 'success' | 'warning' | 'secondary' }> = {
   AVAILABLE: { label: 'Disponível', variant: 'success' },
@@ -223,15 +227,20 @@ export function AuctionsPage() {
   const groups = useGroups();
   const auctions = useAuctions();
   const subscription = useSubscription();
+  const { user } = useAuth();
 
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const eventItems = useEventItems(selectedEventId);
 
-  // Básico: teto de 5 itens por lista (backend bloqueia; aqui só exibimos).
+  // Teto de itens por lista conforme o plano (lista com 'listas_ilimitadas' é ilimitada).
+  // O e-mail UNLIMITED_ITEMS_EMAIL é sempre ilimitado, independente do plano.
+  const isUnlimitedUser =
+    user?.email?.trim().toLowerCase() === UNLIMITED_ITEMS_EMAIL;
   const listLimit = useMemo(() => {
+    if (isUnlimitedUser) return null;
     const features = subscription.data?.plan.features ?? [];
     return features.includes('listas_ilimitadas') ? null : 5;
-  }, [subscription.data]);
+  }, [subscription.data, isUnlimitedUser]);
   const listItemCount = eventItems.data?.length ?? 0;
   const listFull = listLimit !== null && listItemCount >= listLimit;
 
@@ -999,8 +1008,8 @@ export function AuctionsPage() {
               </h4>
               {listFull && (
                 <p className="mb-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
-                  Limite do plano Básico: máximo {listLimit} itens por lista. Exclua um item
-                  ou faça upgrade para o Profissional para listas ilimitadas.
+                  Limite do seu plano: máximo {listLimit} itens por lista. Exclua um item
+                  ou faça upgrade de plano para listas ilimitadas.
                 </p>
               )}
               <form onSubmit={handleCreateItem} className="grid gap-4 sm:grid-cols-2">
