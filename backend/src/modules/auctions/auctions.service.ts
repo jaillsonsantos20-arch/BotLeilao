@@ -419,6 +419,67 @@ export class AuctionsService {
     });
   }
 
+  /**
+   * Atualiza informações de um leilão (nome do produto, valor inicial, duração, etc.).
+   * Só permite editar leilões que ainda não foram encerrados.
+   */
+  async updateAuction(
+    tenantId: string,
+    auctionId: string,
+    data: { productName?: string; initialValue?: number; durationSeconds?: number; minBidStep?: number | null },
+  ): Promise<Auction> {
+    const auction = await this.findById(tenantId, auctionId);
+    if (auction.status !== AuctionStatus.OPEN) {
+      throw new ConflictException('Só é possível editar leilões que estão em andamento.');
+    }
+
+    const updateData: Prisma.AuctionUpdateInput = {};
+    if (data.productName !== undefined) updateData.productName = data.productName;
+    if (data.initialValue !== undefined) updateData.initialValue = new Decimal(data.initialValue);
+    if (data.durationSeconds !== undefined) {
+      updateData.durationSeconds = data.durationSeconds;
+      updateData.endsAt = new Date(auction.startedAt.getTime() + data.durationSeconds * 1000);
+    }
+    if (data.minBidStep !== undefined) {
+      updateData.minBidStep = data.minBidStep !== null ? new Decimal(data.minBidStep) : null;
+    }
+
+    return this.prisma.auction.update({
+      where: { id: auction.id },
+      data: updateData,
+    });
+  }
+
+  /**
+   * Atualiza o valor de um lance (uso exclusivo do admin para corrigir erros).
+   * Recalcula o lance líder se necessário.
+   */
+  async updateBid(
+    tenantId: string,
+    bidId: string,
+    data: { amount: number; participantName?: string; participantPhone?: string },
+  ): Promise<Bid> {
+    const bid = await this.prisma.bid.findFirst({
+      where: { id: bidId, tenantId },
+      include: { auction: true },
+    });
+    if (!bid) {
+      throw new NotFoundException('Lance não encontrado.');
+    }
+    if (bid.auction.status !== AuctionStatus.OPEN) {
+      throw new ConflictException('Só é possível editar lances de leilões em andamento.');
+    }
+
+    return this.prisma.bid.update({
+      where: { id: bidId },
+      data: {
+        amount: new Decimal(data.amount),
+        ...(data.participantName !== undefined ? { participantName: data.participantName } : {}),
+        ...(data.participantPhone !== undefined ? { participantPhone: data.participantPhone } : {}),
+      },
+    });
+  }
+
   private isUniqueViolation(error: unknown): boolean {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'

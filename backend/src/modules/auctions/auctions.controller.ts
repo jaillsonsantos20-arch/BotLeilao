@@ -5,7 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
 import { AuctionsService } from './auctions.service';
-import { ListAuctionsQueryDto, StartAuctionDto, UpdatePaymentStatusDto } from './dto/auction.dto';
+import { ListAuctionsQueryDto, StartAuctionDto, UpdateAuctionDto, UpdatePaymentStatusDto } from './dto/auction.dto';
 
 @ApiTags('auctions')
 @ApiBearerAuth()
@@ -97,5 +97,16 @@ export class AuctionsController {
     @Body() dto: UpdatePaymentStatusDto,
   ): Promise<Auction> {
     return this.auctionsService.updatePaymentStatus(user.tenantId, id, dto.status);
+  }
+
+  @Patch(':id')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Edita informações de um leilão em andamento' })
+  update(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateAuctionDto,
+  ): Promise<Auction> {
+    return this.auctionsService.updateAuction(user.tenantId, id, dto);
   }
 }

@@ -200,6 +200,17 @@ function useSubscription() {
   });
 }
 
+function useAuctionBids(auctionId: string | null) {
+  return useQuery({
+    queryKey: ['auction-bids', auctionId],
+    enabled: !!auctionId,
+    queryFn: async () => {
+      const response = await api.get<ApiEnvelope<any[]>>(`/auctions/${auctionId}/bids`);
+      return response.data.data;
+    },
+  });
+}
+
 function extractError(error: unknown, fallback: string): string {
   const err = error as { response?: { data?: { message?: string | string[] } } };
   const message = err.response?.data?.message;
@@ -268,6 +279,22 @@ export function AuctionsPage() {
   const [scheduleTarget, setScheduleTarget] = useState<{ item: Item; auction: Auction } | null>(null);
   const [scheduleEndAt, setScheduleEndAt] = useState('');
   const [scheduleEndError, setScheduleEndError] = useState<string | null>(null);
+
+  const [editTarget, setEditTarget] = useState<Auction | null>(null);
+  const [editProductName, setEditProductName] = useState('');
+  const [editInitialValue, setEditInitialValue] = useState('');
+  const [editDuration, setEditDuration] = useState('');
+  const [editMinBidStep, setEditMinBidStep] = useState('');
+  const [editAuctionError, setEditAuctionError] = useState<string | null>(null);
+
+  const [viewBidsTarget, setViewBidsTarget] = useState<Auction | null>(null);
+  const auctionBids = useAuctionBids(viewBidsTarget?.id ?? null);
+
+  const [editBidTarget, setEditBidTarget] = useState<any | null>(null);
+  const [editBidAmount, setEditBidAmount] = useState('');
+  const [editBidName, setEditBidName] = useState('');
+  const [editBidPhone, setEditBidPhone] = useState('');
+  const [editBidError, setEditBidError] = useState<string | null>(null);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['auction-events'] });
@@ -437,6 +464,40 @@ export function AuctionsPage() {
     onSuccess: () => invalidate(),
     onError: (err) =>
       setEventError(extractError(err, 'Falha ao atualizar o status de pagamento.')),
+  });
+
+  const updateAuction = useMutation({
+    mutationFn: async () => {
+      if (!editTarget) throw new Error('Selecione um leilão para editar.');
+      const data: Record<string, unknown> = {};
+      if (editProductName.trim()) data.productName = editProductName.trim();
+      if (editInitialValue.trim()) data.initialValue = parseFloat(editInitialValue.replace(',', '.'));
+      if (editDuration.trim()) data.durationSeconds = parseInt(editDuration, 10) * 60;
+      if (editMinBidStep.trim()) data.minBidStep = parseFloat(editMinBidStep.replace(',', '.'));
+      await api.patch(`/auctions/${editTarget.id}`, data);
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditTarget(null);
+      setEditAuctionError(null);
+    },
+    onError: (err) => setEditAuctionError(extractError(err, 'Falha ao atualizar o leilão.')),
+  });
+
+  const updateBid = useMutation({
+    mutationFn: async () => {
+      if (!editBidTarget) throw new Error('Selecione um lance para editar.');
+      const data: Record<string, unknown> = { amount: parseFloat(editBidAmount.replace(',', '.')) };
+      if (editBidName.trim()) data.participantName = editBidName.trim();
+      if (editBidPhone.trim()) data.participantPhone = editBidPhone.trim();
+      await api.patch(`/bids/${editBidTarget.id}`, data);
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditBidTarget(null);
+      setEditBidError(null);
+    },
+    onError: (err) => setEditBidError(extractError(err, 'Falha ao atualizar o lance.')),
   });
 
   function handleCreateEvent(event: FormEvent): void {
@@ -1313,6 +1374,7 @@ export function AuctionsPage() {
                   <TableHead className="text-right">Valor final</TableHead>
                   <TableHead className="text-right">Lances</TableHead>
                   <TableHead className="text-right">Início</TableHead>
+                  <TableHead>Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1374,6 +1436,33 @@ export function AuctionsPage() {
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
                         {formatDate(auction.startedAt)}
+                      </TableCell>
+                      <TableCell>
+                        {(auction._count?.bids ?? 0) > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setViewBidsTarget(auction)}
+                          >
+                            Lances ({auction._count?.bids ?? 0})
+                          </Button>
+                        )}
+                        {auction.status === 'OPEN' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditTarget(auction);
+                              setEditProductName(auction.productName);
+                              setEditInitialValue(String(Number(auction.initialValue)));
+                              setEditDuration(String(Math.round((auction.durationSeconds ?? 120) / 60)));
+                              setEditMinBidStep(auction.minBidStep ? String(Number(auction.minBidStep)) : '');
+                              setEditAuctionError(null);
+                            }}
+                          >
+                            Editar
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -1747,6 +1836,202 @@ export function AuctionsPage() {
                 )}
                 {scheduleTarget.auction.scheduledEndAt ? 'Reagendar' : 'Agendar'}
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="text-lg font-semibold">Editar Leilão</h3>
+                <p className="text-sm text-muted-foreground">
+                  Altere as informações do leilão em andamento.
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setEditTarget(null)}>
+                ✕
+              </Button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div>
+                <Label htmlFor="edit-product-name">Produto</Label>
+                <Input
+                  id="edit-product-name"
+                  value={editProductName}
+                  onChange={(e) => setEditProductName(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="edit-initial-value">Valor inicial (R$)</Label>
+                  <Input
+                    id="edit-initial-value"
+                    type="number"
+                    step="0.01"
+                    value={editInitialValue}
+                    onChange={(e) => setEditInitialValue(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-duration">Duração (min)</Label>
+                  <Input
+                    id="edit-duration"
+                    type="number"
+                    min="1"
+                    value={editDuration}
+                    onChange={(e) => setEditDuration(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="edit-min-bid-step">Incremento mínimo (R$)</Label>
+                <Input
+                  id="edit-min-bid-step"
+                  type="number"
+                  step="0.01"
+                  value={editMinBidStep}
+                  onChange={(e) => setEditMinBidStep(e.target.value)}
+                />
+              </div>
+              {editAuctionError && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {editAuctionError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t p-4">
+              <Button variant="outline" onClick={() => setEditTarget(null)}>
+                Cancelar
+              </Button>
+              <Button disabled={updateAuction.isPending} onClick={() => updateAuction.mutate()}>
+                {updateAuction.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Salvar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editBidTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="text-lg font-semibold">Editar Lance</h3>
+                <p className="text-sm text-muted-foreground">
+                  Altere o valor ou informações do lance.
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setEditBidTarget(null)}>
+                ✕
+              </Button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div>
+                <Label htmlFor="edit-bid-amount">Valor (R$)</Label>
+                <Input
+                  id="edit-bid-amount"
+                  type="number"
+                  step="0.01"
+                  value={editBidAmount}
+                  onChange={(e) => setEditBidAmount(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-bid-name">Nome do participante</Label>
+                <Input
+                  id="edit-bid-name"
+                  value={editBidName}
+                  onChange={(e) => setEditBidName(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-bid-phone">Telefone</Label>
+                <Input
+                  id="edit-bid-phone"
+                  value={editBidPhone}
+                  onChange={(e) => setEditBidPhone(e.target.value)}
+                />
+              </div>
+              {editBidError && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {editBidError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t p-4">
+              <Button variant="outline" onClick={() => setEditBidTarget(null)}>
+                Cancelar
+              </Button>
+              <Button disabled={updateBid.isPending} onClick={() => updateBid.mutate()}>
+                {updateBid.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Salvar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewBidsTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="text-lg font-semibold">Lances — {viewBidsTarget.productName}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {auctionBids.data?.length ?? 0} lance(s) registrado(s).
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setViewBidsTarget(null)}>
+                ✕
+              </Button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {auctionBids.isLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+                </div>
+              ) : (auctionBids.data?.length ?? 0) > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Participante</TableHead>
+                      <TableHead>Telefone</TableHead>
+                      <TableHead className="text-right">Valor</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {auctionBids.data!.map((bid: any) => (
+                      <TableRow key={bid.id}>
+                        <TableCell>{bid.participantName || '—'}</TableCell>
+                        <TableCell className="text-muted-foreground">{bid.participantPhone || '—'}</TableCell>
+                        <TableCell className="text-right font-medium">{formatCurrency(bid.amount)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditBidTarget(bid);
+                              setEditBidAmount(String(Number(bid.amount)));
+                              setEditBidName(bid.participantName ?? '');
+                              setEditBidPhone(bid.participantPhone ?? '');
+                              setEditBidError(null);
+                            }}
+                          >
+                            Editar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center">Nenhum lance registrado.</p>
+              )}
             </div>
           </div>
         </div>
