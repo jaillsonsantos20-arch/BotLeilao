@@ -483,6 +483,7 @@ export class AuctionsService {
   /**
    * Exclui um lance. Se era o lance vencedor, o penúltimo (maior valor restante) vira o vencedor.
    * Se não houver lance restante, o leilão fica sem vencedor.
+   * Atualiza isCurrentLeader nos lances restantes.
    */
   async removeBid(tenantId: string, bidId: string): Promise<{ success: true }> {
     const bid = await this.prisma.bid.findFirst({
@@ -497,27 +498,33 @@ export class AuctionsService {
     }
 
     const auctionId = bid.auctionId;
-    const wasWinner = bid.auction.winnerBidId === bidId;
 
-    // 1. Limpa winnerBidId antes de deletar (evita violação de FK)
-    if (wasWinner) {
-      await this.prisma.auction.update({
-        where: { id: auctionId },
-        data: { winnerBidId: null },
-      });
-    }
-
-    // 2. Deleta o lance
+    // 1. Deleta o lance
     await this.prisma.bid.delete({ where: { id: bidId } });
 
-    // 3. Recalcula o vencedor entre os lances restantes
-    const nextWinner = await this.prisma.bid.findFirst({
+    // 2. Reseta isCurrentLeader em todos os lances deste leilão
+    await this.prisma.bid.updateMany({
+      where: { auctionId },
+      data: { isCurrentLeader: false },
+    });
+
+    // 3. Encontra o maior lance restante e marca como líder
+    const nextLeader = await this.prisma.bid.findFirst({
       where: { auctionId },
       orderBy: { amount: 'desc' },
     });
+
+    if (nextLeader) {
+      await this.prisma.bid.update({
+        where: { id: nextLeader.id },
+        data: { isCurrentLeader: true },
+      });
+    }
+
+    // 4. Atualiza winnerBidId no leilão
     await this.prisma.auction.update({
       where: { id: auctionId },
-      data: { winnerBidId: nextWinner?.id ?? null },
+      data: { winnerBidId: nextLeader?.id ?? null },
     });
 
     return { success: true };
