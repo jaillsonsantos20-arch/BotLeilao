@@ -237,7 +237,7 @@ function generateReportPdf(rows: Array<{
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
   doc.setTextColor(100);
-  doc.text(`LanceZap - Gerado em ${new Date().toLocaleDateString('pt-BR')} as ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, margin, 28);
+  doc.text(`LanceZap - ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, margin, 28);
 
   doc.setTextColor(0);
   doc.setFont('helvetica', 'bold');
@@ -250,7 +250,7 @@ function generateReportPdf(rows: Array<{
   doc.setLineWidth(0.5);
   doc.line(margin, 32, pageWidth - margin, 32);
 
-  autoTable(doc, {
+  const finalY = (autoTable(doc, {
     startY: 36,
     head: [['Item', 'Leilao', 'Grupo', 'Vencedor', 'Pagamento', 'Valor final', 'Data']],
     body: rows.map((r) => [r.itemName, r.eventName, r.groupName, r.winnerName, r.paymentMethod, r.finalValue, r.date]),
@@ -262,18 +262,16 @@ function generateReportPdf(rows: Array<{
       6: { halign: 'right' },
     },
     margin: { left: margin, right: margin, top: 36 },
-    didDrawPage: () => {
-      const pageCount = doc.getNumberOfPages();
-      doc.setFontSize(8);
-      doc.setTextColor(150);
-      doc.text(
-        `Pagina ${pageCount}`,
-        pageWidth - margin,
-        pageHeight - 8,
-        { align: 'right' },
-      );
-    },
-  });
+    didDrawPage: () => {},
+  }) as unknown as number);
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Pagina ${i} de ${pageCount}`, pageWidth - margin, pageHeight - 8, { align: 'right' });
+  }
 
   doc.save(`relatorio-leilao-${new Date().toISOString().slice(0, 10)}.pdf`);
 }
