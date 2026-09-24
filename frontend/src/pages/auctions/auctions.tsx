@@ -1710,51 +1710,65 @@ export function AuctionsPage() {
                 </div>
 
                 <div id="print-report">
-                  <h2 className="mb-1 text-xl font-bold">Relatório de leilões</h2>
-                  <p className="mb-4 text-sm">{formatDate(new Date().toISOString())}</p>
-                  <p className="mb-4 text-sm">
-                    {filteredReportRows.length}{' '}
-                    {filteredReportRows.length === 1 ? 'item selecionado' : 'itens selecionados'} ·{' '}
-                    Total arrecadado: {formatCurrency(filteredReportTotal)}
-                  </p>
-                  <table className="w-full border-collapse">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, borderBottom: '2px solid #000', paddingBottom: 12 }}>
+                    <div>
+                      <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Relatório de Leilões</h1>
+                      <p style={{ fontSize: 12, color: '#555', margin: '4px 0 0' }}>LanceZap — {formatDate(new Date().toISOString())}</p>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <p style={{ fontSize: 12, margin: 0, fontWeight: 600 }}>
+                        {filteredReportRows.length} {filteredReportRows.length === 1 ? 'item' : 'itens'}
+                      </p>
+                      <p style={{ fontSize: 16, margin: '4px 0 0', fontWeight: 700 }}>
+                        Total: {formatCurrency(filteredReportTotal)}
+                      </p>
+                    </div>
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                     <thead>
-                      <tr>
-                        <th className="border border-black px-2 py-1 text-left text-xs">Item</th>
-                        <th className="border border-black px-2 py-1 text-left text-xs">Leilão</th>
-                        <th className="border border-black px-2 py-1 text-left text-xs">Grupo</th>
-                        <th className="border border-black px-2 py-1 text-left text-xs">Vencedor</th>
-                        <th className="border border-black px-2 py-1 text-left text-xs">Método de pagamento</th>
-                        <th className="border border-black px-2 py-1 text-right text-xs">Valor final</th>
-                        <th className="border border-black px-2 py-1 text-right text-xs">Data</th>
+                      <tr style={{ backgroundColor: '#f0f0f0' }}>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Item</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Leilão</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Grupo</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Vencedor</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'left', fontWeight: 700 }}>Pagamento</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>Valor final</th>
+                        <th style={{ border: '1px solid #999', padding: '6px 8px', textAlign: 'right', fontWeight: 700 }}>Data</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredReportRows.map((row) => {
+                      {filteredReportRows.map((row, index) => {
                         const event = events.data?.find((e) => e.id === row.item.auctionEventId);
                         return (
-                          <tr key={row.item.id}>
-                            <td className="border border-black px-2 py-1 text-sm">{row.item.name}</td>
-                            <td className="border border-black px-2 py-1 text-sm">{event?.name ?? '—'}</td>
-                            <td className="border border-black px-2 py-1 text-sm">
+                          <tr key={row.item.id} style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#fafafa' }}>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>{row.item.name}</td>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>{event?.name ?? '—'}</td>
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
                               {row.auction?.group?.name ?? '—'}
                             </td>
-                            <td className="border border-black px-2 py-1 text-sm">
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
                               {row.auction?.winnerBid?.participantName || '—'}
                             </td>
-                            <td className="border border-black px-2 py-1 text-sm">
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px' }}>
                               {row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—'}
                             </td>
-                            <td className="border border-black px-2 py-1 text-right text-sm">
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right', fontWeight: 600 }}>
                               {row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—'}
                             </td>
-                            <td className="border border-black px-2 py-1 text-right text-sm">
+                            <td style={{ border: '1px solid #ccc', padding: '5px 8px', textAlign: 'right' }}>
                               {row.auction ? formatDate(row.auction.startedAt) : '—'}
                             </td>
                           </tr>
                         );
                       })}
                     </tbody>
+                    <tfoot>
+                      <tr style={{ borderTop: '2px solid #000', fontWeight: 700 }}>
+                        <td colSpan={5} style={{ padding: '6px 8px', textAlign: 'right' }}>Total arrecadado:</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontSize: 13 }}>{formatCurrency(filteredReportTotal)}</td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>
