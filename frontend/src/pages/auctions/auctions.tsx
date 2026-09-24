@@ -729,9 +729,11 @@ export function AuctionsPage() {
 
   const filteredReportRows = useMemo(
     () =>
-      reportPaymentFilter === 'ALL'
-        ? reportRows
-        : reportRows.filter((row) => row.auction?.paymentStatus === reportPaymentFilter),
+      reportRows
+        .filter((row) => row.auction?.winnerBid)
+        .filter((row) =>
+          reportPaymentFilter === 'ALL' ? true : row.auction?.paymentStatus === reportPaymentFilter,
+        ),
     [reportRows, reportPaymentFilter],
   );
 
@@ -1852,8 +1854,7 @@ export function AuctionsPage() {
               {reportGenerated ? (
                 <>
                   <Button variant="outline" onClick={() => {
-                    const winningRows = filteredReportRows.filter((row) => row.auction?.winnerBid);
-                    const rows = winningRows.map((row) => {
+                    const rows = filteredReportRows.map((row) => {
                       const event = events.data?.find((e) => e.id === row.item.auctionEventId);
                       return {
                         itemName: row.item.name,
@@ -1865,10 +1866,7 @@ export function AuctionsPage() {
                         date: row.auction ? formatDate(row.auction.startedAt) : '—',
                       };
                     });
-                    const total = winningRows.reduce(
-                      (sum, row) => sum + Number(row.auction!.winnerBid!.amount), 0,
-                    );
-                    generateReportPdf(rows, formatCurrency(total));
+                    generateReportPdf(rows, formatCurrency(filteredReportTotal));
                   }}>
                     <FileText className="size-4" />
                     Gerar PDF
