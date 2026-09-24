@@ -1,5 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   ChevronDown,
   ChevronUp,
@@ -210,6 +212,68 @@ function useAuctionBids(auctionId: string | null) {
       return response.data.data;
     },
   });
+}
+
+function generateReportPdf(rows: Array<{
+  itemName: string;
+  eventName: string;
+  groupName: string;
+  winnerName: string;
+  paymentMethod: string;
+  finalValue: string;
+  date: string;
+}>, total: string) {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 15;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.text('Relatorio de Leiloes', margin, 20);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  doc.text(`LanceZap - Gerado em ${new Date().toLocaleDateString('pt-BR')} as ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, margin, 28);
+
+  doc.setTextColor(0);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.text(`Total arrecadado: ${total}`, pageWidth - margin, 20, { align: 'right' });
+  doc.setFontSize(10);
+  doc.text(`${rows.length} ${rows.length === 1 ? 'item' : 'itens'}`, pageWidth - margin, 28, { align: 'right' });
+
+  doc.setDrawColor(0);
+  doc.setLineWidth(0.5);
+  doc.line(margin, 32, pageWidth - margin, 32);
+
+  autoTable(doc, {
+    startY: 36,
+    head: [['Item', 'Leilao', 'Grupo', 'Vencedor', 'Pagamento', 'Valor final', 'Data']],
+    body: rows.map((r) => [r.itemName, r.eventName, r.groupName, r.winnerName, r.paymentMethod, r.finalValue, r.date]),
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3, textColor: [0, 0, 0], lineColor: [180, 180, 180], lineWidth: 0.2 },
+    headStyles: { fillColor: [41, 128, 185], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
+    alternateRowStyles: { fillColor: [245, 248, 250] },
+    columnStyles: {
+      5: { halign: 'right', fontStyle: 'bold' },
+      6: { halign: 'right' },
+    },
+    margin: { left: margin, right: margin },
+    didDrawPage: (data) => {
+      const pageCount = doc.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text(
+        `Pagina ${data.pageNumber} de ${pageCount}`,
+        pageWidth / 2,
+        doc.internal.pageSize.getHeight() - 8,
+        { align: 'center' },
+      );
+    },
+  });
+
+  doc.save(`relatorio-leilao-${new Date().toISOString().slice(0, 10)}.pdf`);
 }
 
 function extractError(error: unknown, fallback: string): string {
@@ -1708,80 +1772,6 @@ export function AuctionsPage() {
                     </TableBody>
                   </Table>
                 </div>
-
-                <div id="print-report">
-                  <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
-                    <tbody>
-                      <tr>
-                        <td style={{ padding: 0, verticalAlign: 'top' }}>
-                          <div style={{ fontSize: 22, fontWeight: 700 }}>Relatório de Leilões</div>
-                          <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>LanceZap</div>
-                        </td>
-                        <td style={{ padding: 0, verticalAlign: 'top', textAlign: 'right' }}>
-                          <div style={{ fontSize: 12, marginBottom: 2 }}>{formatDate(new Date().toISOString())}</div>
-                          <div style={{ fontSize: 12 }}>{filteredReportRows.length} {filteredReportRows.length === 1 ? 'item' : 'itens'}</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {formatCurrency(filteredReportTotal)}</div>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div style={{ borderTop: '2px solid #000', marginBottom: 12 }}></div>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, tableLayout: 'fixed' }}>
-                    <colgroup>
-                      <col style={{ width: '20%' }} />
-                      <col style={{ width: '16%' }} />
-                      <col style={{ width: '14%' }} />
-                      <col style={{ width: '18%' }} />
-                      <col style={{ width: '12%' }} />
-                      <col style={{ width: '10%' }} />
-                      <col style={{ width: '10%' }} />
-                    </colgroup>
-                    <thead>
-                      <tr style={{ backgroundColor: '#f0f0f0' }}>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'left', fontWeight: 700, fontSize: 10 }}>Item</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'left', fontWeight: 700, fontSize: 10 }}>Leilão</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'left', fontWeight: 700, fontSize: 10 }}>Grupo</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'left', fontWeight: 700, fontSize: 10 }}>Vencedor</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'left', fontWeight: 700, fontSize: 10 }}>Pagamento</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'right', fontWeight: 700, fontSize: 10 }}>Valor</th>
-                        <th style={{ border: '1px solid #999', padding: '5px 6px', textAlign: 'right', fontWeight: 700, fontSize: 10 }}>Data</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredReportRows.map((row, index) => {
-                        const event = events.data?.find((e) => e.id === row.item.auctionEventId);
-                        return (
-                          <tr key={row.item.id} style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#fafafa' }}>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.item.name}</td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{event?.name ?? '—'}</td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {row.auction?.group?.name ?? '—'}
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {row.auction?.winnerBid?.participantName || '—'}
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—'}
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                              {row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—'}
-                            </td>
-                            <td style={{ border: '1px solid #ccc', padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', fontSize: 10 }}>
-                              {row.auction ? formatDate(row.auction.startedAt) : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr style={{ fontWeight: 700 }}>
-                        <td colSpan={5} style={{ padding: '6px', textAlign: 'right', borderTop: '2px solid #000' }}>Total arrecadado:</td>
-                        <td style={{ padding: '6px', textAlign: 'right', borderTop: '2px solid #000', fontSize: 12 }}>{formatCurrency(filteredReportTotal)}</td>
-                        <td style={{ borderTop: '2px solid #000' }}></td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
               </div>
             ) : allItems.isLoading || events.isLoading ? (
               <div className="flex-1 space-y-2 p-4">
@@ -1859,7 +1849,21 @@ export function AuctionsPage() {
             <div className="flex justify-end gap-2 border-t p-4">
               {reportGenerated ? (
                 <>
-                  <Button variant="outline" onClick={() => window.print()}>
+                  <Button variant="outline" onClick={() => {
+                    const rows = filteredReportRows.map((row) => {
+                      const event = events.data?.find((e) => e.id === row.item.auctionEventId);
+                      return {
+                        itemName: row.item.name,
+                        eventName: event?.name ?? '—',
+                        groupName: row.auction?.group?.name ?? '—',
+                        winnerName: row.auction?.winnerBid?.participantName || row.auction?.winnerBid?.participantPhone || '—',
+                        paymentMethod: row.auction ? PAYMENT_METHOD_LABELS[paymentMethods[row.auction.id] ?? ''] ?? '—' : '—',
+                        finalValue: row.auction?.winnerBid ? formatCurrency(row.auction.winnerBid.amount) : '—',
+                        date: row.auction ? formatDate(row.auction.startedAt) : '—',
+                      };
+                    });
+                    generateReportPdf(rows, formatCurrency(filteredReportTotal));
+                  }}>
                     <FileText className="size-4" />
                     Gerar PDF
                   </Button>
