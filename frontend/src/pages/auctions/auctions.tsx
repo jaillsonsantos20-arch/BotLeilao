@@ -541,6 +541,18 @@ export function AuctionsPage() {
     onSuccess: () => invalidate(),
   });
 
+  const removeBid = useMutation({
+    mutationFn: async (bidId: string) => {
+      await api.delete(`/bids/${bidId}`);
+    },
+    onSuccess: () => {
+      invalidate();
+      if (viewBidsTarget) {
+        void queryClient.invalidateQueries({ queryKey: ['auction-bids', viewBidsTarget.id] });
+      }
+    },
+  });
+
   function handleCreateEvent(event: FormEvent): void {
     event.preventDefault();
     createEvent.mutate();
@@ -2110,19 +2122,34 @@ export function AuctionsPage() {
                         <TableCell className="text-muted-foreground">{bid.participantPhone || '—'}</TableCell>
                         <TableCell className="text-right font-medium">{formatCurrency(bid.amount)}</TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setEditBidTarget(bid);
-                              setEditBidAmount(String(Number(bid.amount)));
-                              setEditBidName(bid.participantName ?? '');
-                              setEditBidPhone(bid.participantPhone ?? '');
-                              setEditBidError(null);
-                            }}
-                          >
-                            Editar
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditBidTarget(bid);
+                                setEditBidAmount(String(Number(bid.amount)));
+                                setEditBidName(bid.participantName ?? '');
+                                setEditBidPhone(bid.participantPhone ?? '');
+                                setEditBidError(null);
+                              }}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive"
+                              disabled={removeBid.isPending}
+                              onClick={() => {
+                                if (window.confirm(`Excluir o lance de ${formatCurrency(bid.amount)} de "${bid.participantName ?? 'Desconhecido'}"? O lance vencedor será recalculado automaticamente.`)) {
+                                  removeBid.mutate(bid.id);
+                                }
+                              }}
+                            >
+                              Excluir
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}

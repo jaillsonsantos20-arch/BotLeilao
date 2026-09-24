@@ -480,6 +480,40 @@ export class AuctionsService {
     });
   }
 
+  /**
+   * Exclui um lance. Se era o lance vencedor, o penúltimo (maior valor restante) vira o vencedor.
+   * Se não houver lance restante, o leilão fica sem vencedor.
+   */
+  async removeBid(tenantId: string, bidId: string): Promise<{ success: true }> {
+    const bid = await this.prisma.bid.findFirst({
+      where: { id: bidId, tenantId },
+      include: { auction: true },
+    });
+    if (!bid) {
+      throw new NotFoundException('Lance não encontrado.');
+    }
+    if (bid.auction.status !== AuctionStatus.OPEN) {
+      throw new ConflictException('Só é possível excluir lances de leilões em andamento.');
+    }
+
+    const wasWinner = bid.auction.winnerBidId === bidId;
+
+    await this.prisma.bid.delete({ where: { id: bidId } });
+
+    if (wasWinner) {
+      const nextWinner = await this.prisma.bid.findFirst({
+        where: { auctionId: bid.auctionId },
+        orderBy: { amount: 'desc' },
+      });
+      await this.prisma.auction.update({
+        where: { id: bid.auctionId },
+        data: { winnerBidId: nextWinner?.id ?? null },
+      });
+    }
+
+    return { success: true };
+  }
+
   private isUniqueViolation(error: unknown): boolean {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'

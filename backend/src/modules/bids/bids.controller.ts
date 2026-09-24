@@ -1,4 +1,4 @@
-import { Controller, Post, Patch, Body, Param } from '@nestjs/common';
+import { Controller, Delete, Post, Patch, Body, Param } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -37,5 +37,15 @@ export class BidsController {
     @Body() dto: UpdateBidDto,
   ) {
     return this.auctionsService.updateBid(user.tenantId, bidId, dto);
+  }
+
+  @Delete('bids/:bidId')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Exclui um lance' })
+  removeBid(
+    @CurrentUser() user: RequestUser,
+    @Param('bidId') bidId: string,
+  ) {
+    return this.auctionsService.removeBid(user.tenantId, bidId);
   }
 }
