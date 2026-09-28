@@ -61,7 +61,7 @@ export function parseAmount(raw: string): number | null {
   let cleaned = raw
     .trim()
     .replace(/\s+/g, '')
-    .replace('R$', '')
+    .replace(/r\$/gi, '')
     .replace(/\u00A0/g, '')
     .trim();
 

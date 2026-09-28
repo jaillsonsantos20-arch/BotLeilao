@@ -7,7 +7,7 @@ import { join } from 'path';
 import { PrismaService } from '../../common/database/prisma.service';
 import { AuctionEngine } from './auction.engine';
 import { CommandRouter } from './command-handler';
-import { WhatsAppGroupContext } from './whatsapp.types';
+import { ReplyContext, WhatsAppGroupContext } from './whatsapp.types';
 import { WHATSAPP_CONNECT_TIMEOUT_MS, WHATSAPP_RECOVERY_COOLDOWN_MS } from './whatsapp.constants';
 
 /**
@@ -237,7 +237,7 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
     groupId: string,
     text: string,
     mediaPath?: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const maxAttempts = 3;
     let lastError: unknown = null;
     const media = mediaPath && existsSync(mediaPath) ? MessageMedia.fromFilePath(mediaPath) : null;
@@ -248,25 +248,25 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(
           `Cliente inexistente para o tenant ${tenantId}. Mensagem não enviada ao grupo ${groupId}.`,
         );
-        return;
+        return undefined;
       }
 
       try {
         const chat = await client.getChatById(groupId);
         if (!chat) {
           this.logger.warn(`Chat não encontrado para o grupo ${groupId}.`);
-          return;
+          return undefined;
         }
         if (media) {
-          await chat.sendMessage(media, { caption: text });
+          const sent = await chat.sendMessage(media, { caption: text });
           this.logger.log(
             `Imagem enviada ao grupo ${groupId}: "${text.slice(0, 60)}"`,
           );
-        } else {
-          await chat.sendMessage(text);
-          this.logger.log(`Mensagem enviada ao grupo ${groupId}: "${text.slice(0, 60)}"`);
+          return sent?.id?._serialized;
         }
-        return;
+        const sent = await chat.sendMessage(text);
+        this.logger.log(`Mensagem enviada ao grupo ${groupId}: "${text.slice(0, 60)}"`);
+        return sent?.id?._serialized;
       } catch (error) {
         lastError = error;
         this.logger.error(
@@ -461,7 +461,26 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         chat: group,
       };
 
-      await this.router.route(context, message);
+      // Responder do WhatsApp: recupera o item da mensagem do bot citada.
+      let replyContext: ReplyContext | undefined;
+      if (message.hasQuotedMsg) {
+        try {
+          const quoted = await message.getQuotedMessage();
+          const quotedId = quoted.id?._serialized;
+          if (quotedId) {
+            replyContext = this.engine.getReplyContext(quotedId);
+            if (replyContext) {
+              this.logger.log(
+                `[DIAG] Reply detectado (msg ${quotedId}): item "${replyContext.itemName}"`,
+              );
+            }
+          }
+        } catch {
+          // Mensagem citada pode ter sido apagada — segue sem contexto.
+        }
+      }
+
+      await this.router.route(context, message, replyContext);
     } catch (error) {
       // Um erro em uma mensagem não deve derrubar o processo nem o bot.
       this.logger.error(

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Message } from 'whatsapp-web.js';
 import { AuctionEngine } from './auction.engine';
-import { WhatsAppGroupContext } from './whatsapp.types';
+import { ReplyContext, WhatsAppGroupContext } from './whatsapp.types';
 
 export type CommandName = 'iniciar' | 'status' | 'encerrar' | 'historico' | 'ajuda' | 'vincular';
 
@@ -18,14 +18,19 @@ export class CommandRouter {
 
   constructor(private readonly engine: AuctionEngine) {}
 
-  async route(context: WhatsAppGroupContext, message: Message): Promise<void> {
+  async route(
+    context: WhatsAppGroupContext,
+    message: Message,
+    replyContext?: ReplyContext,
+  ): Promise<void> {
     const text = (message.body ?? '').trim();
 
     try {
       if (text.startsWith('!')) {
         await this.handleCommand(context, text);
       } else {
-        await this.engine.handleChatInput(context, message);
+        // Passa o replyContext para o handleChatInput
+        await this.engine.handleChatInput(context, message, replyContext);
       }
     } catch (error) {
       this.logger.error(`Erro ao processar mensagem: ${(error as Error).message}`);

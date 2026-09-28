@@ -77,6 +77,7 @@ export interface ScheduledEventMemory {
 export interface ListAuctionEntry {
   number: number;
   auctionId: string;
+  itemId: string | null;
   name: string;
   status: any;
   initialValue: any;
@@ -86,4 +87,17 @@ export interface ListAuctionEntry {
   imageUrl: string | null;
   endsAt: Date;
   durationSeconds: number;
+}
+
+/**
+ * Contexto de item associado a uma mensagem enviada pelo bot.
+ *
+ * Quando o participante usa o "Responder" do WhatsApp numa mensagem do bot que
+ * menciona um item (ex.: alerta "QUEM DÁ MAIS?"), o motor recupera este
+ * contexto pelo messageId e interpreta o lance como sendo daquele item.
+ */
+export interface ReplyContext {
+  auctionId: string;
+  itemId: string | null;
+  itemName: string;
 }
