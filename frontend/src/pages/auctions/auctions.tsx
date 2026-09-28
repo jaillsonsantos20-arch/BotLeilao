@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -77,11 +77,18 @@ const AUCTION_STATUS: Record<AuctionStatus, { label: string; variant: 'success' 
   CANCELLED: { label: 'Cancelado', variant: 'destructive' },
 };
 
-const DEFAULT_ITEM_DURATION_MINUTES = 2;
-
-function formatItemDuration(durationSeconds: number): string {
-  if (durationSeconds <= 0) return 'Sem tempo';
+function formatItemDuration(durationSeconds: number | null | undefined): string {
+  if (durationSeconds == null || durationSeconds <= 0) return '—';
   return durationSeconds % 60 === 0 ? `${durationSeconds / 60} min` : `${durationSeconds}s`;
+}
+
+async function uploadItemImage(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await api.post<ApiEnvelope<{ url: string }>>('/items/upload-image', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data.data.url;
 }
 
 function toTimeValue(date: Date): string {
@@ -335,7 +342,20 @@ export function AuctionsPage() {
   const [itemDescription, setItemDescription] = useState('');
   const [itemValue, setItemValue] = useState('');
   const [itemDuration, setItemDuration] = useState('');
+  const [itemNumber, setItemNumber] = useState('');
+  const [itemImageUrl, setItemImageUrl] = useState<string | null>(null);
+  const [itemImageUploading, setItemImageUploading] = useState(false);
   const [itemFormError, setItemFormError] = useState<string | null>(null);
+
+  const [editItemTarget, setEditItemTarget] = useState<Item | null>(null);
+  const [editItemNumber, setEditItemNumber] = useState('');
+  const [editItemName, setEditItemName] = useState('');
+  const [editItemDescription, setEditItemDescription] = useState('');
+  const [editItemValue, setEditItemValue] = useState('');
+  const [editItemDuration, setEditItemDuration] = useState('');
+  const [editItemImageUrl, setEditItemImageUrl] = useState<string | null>(null);
+  const [editItemImageUploading, setEditItemImageUploading] = useState(false);
+  const [editItemError, setEditItemError] = useState<string | null>(null);
 
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
@@ -495,8 +515,12 @@ export function AuctionsPage() {
         name: itemName,
         description: itemDescription || undefined,
         initialValue: parseFloat(itemValue),
+        number: itemNumber.trim() && !Number.isNaN(parseInt(itemNumber, 10))
+          ? parseInt(itemNumber, 10)
+          : undefined,
+        imageUrl: itemImageUrl || undefined,
         durationMinutes: itemDuration.trim()
-          ? Math.max(1, parseInt(itemDuration, 10) || DEFAULT_ITEM_DURATION_MINUTES)
+          ? Math.max(1, parseInt(itemDuration, 10) || 1)
           : undefined,
       });
       return response.data.data;
@@ -507,10 +531,80 @@ export function AuctionsPage() {
       setItemDescription('');
       setItemValue('');
       setItemDuration('');
+      setItemNumber('');
+      setItemImageUrl(null);
       setItemFormError(null);
     },
     onError: (err) => setItemFormError(extractError(err, 'Falha ao cadastrar o item.')),
   });
+
+  function handleItemImageSelect(event: ChangeEvent<HTMLInputElement>): void {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    setItemImageUploading(true);
+    setItemFormError(null);
+    uploadItemImage(file)
+      .then((url) => setItemImageUrl(url))
+      .catch((err) => setItemFormError(extractError(err, 'Falha ao enviar a foto.')))
+      .finally(() => {
+        setItemImageUploading(false);
+        input.value = '';
+      });
+  }
+
+  function handleEditItemImageSelect(event: ChangeEvent<HTMLInputElement>): void {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    setEditItemImageUploading(true);
+    setEditItemError(null);
+    uploadItemImage(file)
+      .then((url) => setEditItemImageUrl(url))
+      .catch((err) => setEditItemError(extractError(err, 'Falha ao enviar a foto.')))
+      .finally(() => {
+        setEditItemImageUploading(false);
+        input.value = '';
+      });
+  }
+
+  function openItemEditor(item: Item): void {
+    setEditItemTarget(item);
+    setEditItemNumber(item.number != null ? String(item.number) : '');
+    setEditItemName(item.name);
+    setEditItemDescription(item.description ?? '');
+    setEditItemValue(String(item.initialValue));
+    setEditItemDuration(
+      item.durationSeconds != null && item.durationSeconds > 0
+        ? String(Math.round(item.durationSeconds / 60))
+        : '',
+    );
+    setEditItemImageUrl(item.imageUrl);
+    setEditItemError(null);
+  }
+
+  function saveEditItem(): void {
+    if (!editItemTarget) return;
+    if (!editItemName.trim()) {
+      setEditItemError('Informe o nome do item.');
+      return;
+    }
+    const data: Record<string, unknown> = {
+      name: editItemName.trim(),
+      description: editItemDescription.trim() || null,
+      imageUrl: editItemImageUrl || null,
+      number: editItemNumber.trim() && !Number.isNaN(parseInt(editItemNumber, 10))
+        ? parseInt(editItemNumber, 10)
+        : null,
+      durationMinutes:
+        editItemDuration.trim() && parseInt(editItemDuration, 10) > 0
+          ? parseInt(editItemDuration, 10)
+          : null,
+    };
+    const value = parseFloat(editItemValue.replace(',', '.'));
+    if (editItemValue.trim() && !Number.isNaN(value)) data.initialValue = value;
+    updateItem.mutate({ itemId: editItemTarget.id, data });
+  }
 
   const removeItem = useMutation({
     mutationFn: async (itemId: string) => {
@@ -598,10 +692,15 @@ export function AuctionsPage() {
   });
 
   const updateItem = useMutation({
-    mutationFn: async (params: { itemId: string; name: string }) => {
-      await api.patch(`/items/${params.itemId}`, { name: params.name });
+    mutationFn: async (params: { itemId: string; data: Record<string, unknown> }) => {
+      await api.patch(`/items/${params.itemId}`, params.data);
     },
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      invalidate();
+      setEditItemTarget(null);
+      setEditItemError(null);
+    },
+    onError: (err) => setEditItemError(extractError(err, 'Falha ao atualizar o item.')),
   });
 
   const removeBid = useMutation({
@@ -1220,6 +1319,21 @@ export function AuctionsPage() {
                     required
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="item-number">Nº do item (opcional)</Label>
+                  <Input
+                    id="item-number"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={itemNumber}
+                    onChange={(event) => setItemNumber(event.target.value)}
+                    placeholder="Automático"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Deixe vazio para numerar automaticamente.
+                  </p>
+                </div>
                 <div className="space-y-2 sm:col-span-2">
                   <Label htmlFor="item-description">Descrição (opcional)</Label>
                   <Textarea
@@ -1252,7 +1366,7 @@ export function AuctionsPage() {
                     step="1"
                     value={itemDuration}
                     onChange={(event) => setItemDuration(event.target.value)}
-                    placeholder="2"
+                    placeholder="Sem tempo"
                   />
                   <p className="text-xs text-muted-foreground">
                     Opcional. Tempo de cada item na lista, em minutos. O bot
@@ -1262,8 +1376,48 @@ export function AuctionsPage() {
                     manualmente pelo painel.
                   </p>
                 </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="item-image">Foto do item (opcional)</Label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="item-image"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      onChange={handleItemImageSelect}
+                      disabled={itemImageUploading}
+                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-accent"
+                    />
+                    {itemImageUploading && <Loader2 className="size-4 animate-spin" />}
+                    {itemImageUrl && (
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={itemImageUrl}
+                          alt="Prévia da foto do item"
+                          className="size-10 rounded-md border object-cover"
+                        />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-8"
+                          onClick={() => setItemImageUrl(null)}
+                          title="Remover foto"
+                        >
+                          <X className="size-4 text-destructive" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    JPEG, PNG, WebP ou GIF até 5MB. A foto é enviada no início
+                    da lista junto com o Nº e o valor do item.
+                  </p>
+                </div>
                 <div className="sm:col-span-2">
-                  <Button type="submit" disabled={createItem.isPending || listFull}>
+                  <Button
+                    type="submit"
+                    disabled={createItem.isPending || listFull || itemImageUploading}
+                  >
                     {createItem.isPending && <Loader2 className="animate-spin" />}
                     Salvar item
                   </Button>
@@ -1289,6 +1443,7 @@ export function AuctionsPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="text-center">Nº</TableHead>
                         <TableHead>Item</TableHead>
                         <TableHead className="text-right">Valor inicial</TableHead>
                         <TableHead className="text-right">Duração</TableHead>
@@ -1301,6 +1456,9 @@ export function AuctionsPage() {
                         const status = ITEM_STATUS[item.status];
                         return (
                           <TableRow key={item.id}>
+                            <TableCell className="text-center font-medium text-muted-foreground">
+                              {item.number ?? '—'}
+                            </TableCell>
                             <TableCell>
                               <div className="flex items-center gap-3">
                                 <ItemThumb item={item} />
@@ -1313,7 +1471,7 @@ export function AuctionsPage() {
                                         onChange={(e) => setEditingItemName(e.target.value)}
                                         onKeyDown={(e) => {
                                           if (e.key === 'Enter' && editingItemName.trim()) {
-                                            updateItem.mutate({ itemId: item.id, name: editingItemName.trim() });
+                                            updateItem.mutate({ itemId: item.id, data: { name: editingItemName.trim() } });
                                             setEditingItemId(null);
                                           }
                                           if (e.key === 'Escape') setEditingItemId(null);
@@ -1326,7 +1484,7 @@ export function AuctionsPage() {
                                         className="h-7 px-2"
                                         onClick={() => {
                                           if (editingItemName.trim()) {
-                                            updateItem.mutate({ itemId: item.id, name: editingItemName.trim() });
+                                            updateItem.mutate({ itemId: item.id, data: { name: editingItemName.trim() } });
                                             setEditingItemId(null);
                                           }
                                         }}
@@ -1430,6 +1588,14 @@ export function AuctionsPage() {
                                 >
                                   <Clock className="size-4" />
                                   {openAuctionByItem.get(item.id)?.scheduledEndAt ? 'Reagendar' : 'Agendar fim'}
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  title="Editar item (Nº, nome, foto, valor e duração)"
+                                  onClick={() => openItemEditor(item)}
+                                >
+                                  <Pencil className="size-4" />
                                 </Button>
                                 <Button
                                   size="icon"
@@ -1976,6 +2142,131 @@ export function AuctionsPage() {
                   <Clock className="size-4" />
                 )}
                 {scheduleTarget.auction.scheduledEndAt ? 'Reagendar' : 'Agendar'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editItemTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg border bg-background shadow-lg">
+            <div className="flex items-start justify-between gap-2 border-b p-4">
+              <div>
+                <h3 className="text-lg font-semibold">Editar Item</h3>
+                <p className="text-sm text-muted-foreground">
+                  Altere o Nº, a foto, o valor e a duração do item.
+                </p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setEditItemTarget(null)} aria-label="Fechar">
+                <X className="size-4" />
+              </Button>
+            </div>
+            <div className="space-y-4 overflow-auto p-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="edit-item-number">Nº</Label>
+                  <Input
+                    id="edit-item-number"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={editItemNumber}
+                    onChange={(e) => setEditItemNumber(e.target.value)}
+                    placeholder="Automático"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-item-duration">Duração (min)</Label>
+                  <Input
+                    id="edit-item-duration"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    step="1"
+                    value={editItemDuration}
+                    onChange={(e) => setEditItemDuration(e.target.value)}
+                    placeholder="Sem tempo"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="edit-item-name">Nome do item</Label>
+                <Input
+                  id="edit-item-name"
+                  value={editItemName}
+                  onChange={(e) => setEditItemName(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-item-description">Descrição</Label>
+                <Textarea
+                  id="edit-item-description"
+                  value={editItemDescription}
+                  onChange={(e) => setEditItemDescription(e.target.value)}
+                  placeholder="Detalhes do produto"
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-item-value">Valor inicial (R$)</Label>
+                <Input
+                  id="edit-item-value"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={editItemValue}
+                  onChange={(e) => setEditItemValue(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-item-image">Foto do item</Label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="edit-item-image"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleEditItemImageSelect}
+                    disabled={editItemImageUploading}
+                    className="block flex-1 text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-accent"
+                  />
+                  {editItemImageUploading && <Loader2 className="size-4 animate-spin" />}
+                  {editItemImageUrl && (
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={editItemImageUrl}
+                        alt="Prévia da foto do item"
+                        className="size-10 rounded-md border object-cover"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-8"
+                        onClick={() => setEditItemImageUrl(null)}
+                        title="Remover foto"
+                      >
+                        <X className="size-4 text-destructive" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {editItemError && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {editItemError}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t p-4">
+              <Button variant="outline" onClick={() => setEditItemTarget(null)}>
+                Cancelar
+              </Button>
+              <Button
+                disabled={updateItem.isPending || editItemImageUploading}
+                onClick={saveEditItem}
+              >
+                {updateItem.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                Salvar
               </Button>
             </div>
           </div>

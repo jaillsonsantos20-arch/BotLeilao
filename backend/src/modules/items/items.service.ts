@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Auction, Item, ItemStatus, Role, SessionStatus } from '@prisma/client';
+import { Auction, Item, ItemStatus, Prisma, Role, SessionStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../common/database/prisma.service';
@@ -42,9 +42,13 @@ export class ItemsService {
     if (dto.initialValue <= 0) {
       throw new BadRequestException('O valor inicial deve ser maior que zero.');
     }
-    if (dto.durationMinutes !== undefined && dto.durationMinutes < 1) {
+    if (dto.durationMinutes != null && dto.durationMinutes < 1) {
       throw new BadRequestException('A duração mínima do leilão é de 1 minuto.');
     }
+
+    let number: number | null = dto.number ?? null;
+    let order: number | undefined;
+
     if (dto.auctionEventId) {
       await this.auctionEventsService.ensureOpen(tenantId, dto.auctionEventId);
       await this.planLimits.assertCanAddItemToEvent(
@@ -53,19 +57,66 @@ export class ItemsService {
         actorRole,
         actorEmail,
       );
+
+      // Nº do item no modo lista: preenche números ausentes (itens legados) e
+      // atribui o próximo sequencial quando não informado — mantém o Nº estável
+      // mesmo que a posição na lista mude depois.
+      const siblings = await this.prisma.item.findMany({
+        where: { tenantId, auctionEventId: dto.auctionEventId },
+        orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+        select: { id: true, number: true, order: true },
+      });
+      const used = new Set<number>(
+        siblings.map((s) => s.number).filter((n): n is number => n != null),
+      );
+      let nextFree = 1;
+      for (const sibling of siblings) {
+        if (sibling.number != null) continue;
+        while (used.has(nextFree)) nextFree += 1;
+        await this.prisma.item.update({
+          where: { id: sibling.id },
+          data: { number: nextFree },
+        });
+        used.add(nextFree);
+      }
+
+      if (number == null) {
+        let candidate = 1;
+        while (used.has(candidate)) candidate += 1;
+        number = candidate;
+      } else if (used.has(number)) {
+        throw new BadRequestException(
+          `Já existe um item com o Nº ${number} neste leilão.`,
+        );
+      }
+
+      const maxOrder = siblings.reduce((max, s) => Math.max(max, s.order), 0);
+      order = dto.order ?? maxOrder + 1;
     }
 
-    return this.prisma.item.create({
-      data: {
-        tenantId,
-        auctionEventId: dto.auctionEventId ?? null,
-        name: dto.name,
-        description: dto.description ?? null,
-        imageUrl: dto.imageUrl ?? null,
-        initialValue: new Decimal(dto.initialValue),
-        durationSeconds: dto.durationMinutes !== undefined ? dto.durationMinutes * 60 : 0,
-      },
-    });
+    try {
+      return await this.prisma.item.create({
+        data: {
+          tenantId,
+          auctionEventId: dto.auctionEventId ?? null,
+          number,
+          name: dto.name,
+          description: dto.description ?? null,
+          imageUrl: dto.imageUrl ?? null,
+          initialValue: new Decimal(dto.initialValue),
+          // Sem duração informada => NULL (item sem encerramento individual).
+          durationSeconds: dto.durationMinutes != null ? dto.durationMinutes * 60 : null,
+          ...(order !== undefined ? { order } : {}),
+        },
+      });
+    } catch (error) {
+      if (this.isNumberUniqueViolation(error)) {
+        throw new BadRequestException(
+          `Já existe um item com o Nº ${number} neste leilão.`,
+        );
+      }
+      throw error;
+    }
   }
 
   async list(
@@ -119,8 +170,9 @@ export class ItemsService {
     description?: string;
     imageUrl?: string;
     initialValue?: number;
+    number?: number | null;
     order?: number;
-    durationMinutes?: number;
+    durationMinutes?: number | null;
   }): Promise<Item> {
     const item = await this.findById(tenantId, itemId);
     const updateData: Record<string, unknown> = {};
@@ -129,12 +181,72 @@ export class ItemsService {
     if (data.imageUrl !== undefined) updateData.imageUrl = data.imageUrl;
     if (data.initialValue !== undefined) updateData.initialValue = new Decimal(data.initialValue);
     if (data.order !== undefined) updateData.order = data.order;
-    if (data.durationMinutes !== undefined) updateData.durationSeconds = data.durationMinutes * 60;
 
-    return this.prisma.item.update({
-      where: { id: item.id },
-      data: updateData,
-    });
+    if (data.number !== undefined) {
+      let number = data.number;
+      // Item de lista não pode ficar sem Nº (mataria o vínculo estável com o
+      // status/lance): limpar o número gera o próximo sequencial livre.
+      if (number == null && item.auctionEventId) {
+        const siblings = await this.prisma.item.findMany({
+          where: { tenantId, auctionEventId: item.auctionEventId },
+          select: { number: true },
+        });
+        const used = new Set<number>(
+          siblings.map((s) => s.number).filter((n): n is number => n != null),
+        );
+        let candidate = 1;
+        while (used.has(candidate)) candidate += 1;
+        number = candidate;
+      }
+      if (number != null && item.auctionEventId) {
+        const clash = await this.prisma.item.findFirst({
+          where: {
+            tenantId,
+            auctionEventId: item.auctionEventId,
+            number,
+            id: { not: item.id },
+          },
+          select: { id: true },
+        });
+        if (clash) {
+          throw new BadRequestException(
+            `Já existe um item com o Nº ${number} neste leilão.`,
+          );
+        }
+      }
+      updateData.number = number;
+    }
+
+    if (data.durationMinutes !== undefined) {
+      // 0 ou null => sem duração (NULL — encerra apenas pelo painel).
+      updateData.durationSeconds =
+        data.durationMinutes != null && data.durationMinutes > 0
+          ? data.durationMinutes * 60
+          : null;
+    }
+
+    try {
+      return await this.prisma.item.update({
+        where: { id: item.id },
+        data: updateData,
+      });
+    } catch (error) {
+      if (this.isNumberUniqueViolation(error)) {
+        throw new BadRequestException(
+          `Já existe um item com o Nº ${data.number} neste leilão.`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Violação do índice único (auctionEventId, number) ao gravar o Nº do item. */
+  private isNumberUniqueViolation(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      String((error.meta as { target?: string[] } | undefined)?.target ?? '').includes('number')
+    );
   }
 
   /**
@@ -171,14 +283,22 @@ export class ItemsService {
       );
     }
 
+    // Leilão individual exige prazo (o ticker encerra ao chegar a zero).
+    const durationSeconds =
+      dto.durationMinutes != null ? dto.durationMinutes * 60 : item.durationSeconds;
+    if (durationSeconds == null) {
+      throw new BadRequestException(
+        'Este item não tem duração definida. Informe a duração (em minutos) para iniciar o leilão individual.',
+      );
+    }
+
     const auction = await this.auctionsService.startAuction(tenantId, {
       groupId: group.id,
       itemId: item.id,
       auctionEventId: item.auctionEventId ?? undefined,
       productName: item.name,
       initialValue: Number(item.initialValue),
-      durationSeconds:
-      dto.durationMinutes !== undefined ? dto.durationMinutes * 60 : item.durationSeconds,
+      durationSeconds,
       startedBy,
     });
 

@@ -182,6 +182,7 @@ export class AuctionEventsService {
 
     const auctions: Auction[] = [];
     for (const item of items) {
+      const itemDuration = item.durationSeconds ?? 0;
       const auction = await this.prisma.auction.create({
         data: {
           tenantId,
@@ -190,13 +191,13 @@ export class AuctionEventsService {
           auctionEventId: event.id,
           productName: item.name,
           initialValue: item.initialValue,
-          durationSeconds: item.durationSeconds,
+          durationSeconds: itemDuration,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
           minBidStep: event.minBidStep ?? null,
           endsAt:
-            item.durationSeconds > 0
-              ? new Date(Date.now() + item.durationSeconds * 1000)
+            itemDuration > 0
+              ? new Date(Date.now() + itemDuration * 1000)
               : null,
         },
       });
@@ -247,7 +248,7 @@ export class AuctionEventsService {
       const auction = byItem.get(item.id);
       const leading = auction?.bids[0] ?? auction?.winnerBid ?? null;
       return {
-        number: index + 1,
+        number: item.number ?? index + 1,
         auctionId: auction?.id ?? null,
         itemId: item.id,
         name: item.name,

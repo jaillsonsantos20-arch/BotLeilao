@@ -79,6 +79,7 @@ export interface ListAuctionEntry {
   auctionId: string;
   itemId: string | null;
   name: string;
+  description: string | null;
   status: any;
   initialValue: any;
   currentAmount: any;

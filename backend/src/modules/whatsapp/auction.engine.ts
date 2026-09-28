@@ -15,6 +15,7 @@ import { PrismaService } from '../../common/database/prisma.service';
 import {
   WHATSAPP_DB_SWEEP_INTERVAL_MS,
   WHATSAPP_DEFAULT_DURATION_MINUTES,
+  WHATSAPP_ITEM_CARD_DELAY_MS,
   WHATSAPP_LIST_STATUS_INTERVAL_MS,
   WHATSAPP_MAX_DURATION_MINUTES,
   WHATSAPP_MIN_DURATION_MINUTES,
@@ -338,8 +339,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       throw new Error('Já existe um leilão ativo neste grupo.');
     }
 
+    const createdAuctionIds: string[] = [];
     for (const item of items) {
-      await this.prisma.auction.create({
+      const itemDuration = item.durationSeconds ?? 0;
+      const auction = await this.prisma.auction.create({
         data: {
           tenantId,
           groupId: group.id,
@@ -347,23 +350,24 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           auctionEventId: event.id,
           productName: item.name,
           initialValue: item.initialValue,
-          durationSeconds: item.durationSeconds,
+          durationSeconds: itemDuration,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
           minBidStep: event.minBidStep ?? null,
           endsAt:
-            item.durationSeconds > 0
-              ? new Date(Date.now() + item.durationSeconds * 1000)
+            itemDuration > 0
+              ? new Date(Date.now() + itemDuration * 1000)
               : null,
         },
       });
+      createdAuctionIds.push(auction.id);
       await this.prisma.item.update({
         where: { id: item.id },
         data: { status: ItemStatus.ON_AUCTION },
       });
     }
 
-    return {
+    const memory: ActiveListMemory = {
       tenantId,
       groupId: group.whatsappGroupId,
       internalGroupId: group.id,
@@ -376,6 +380,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       warnedThreeByAuction: new Map(),
       warnedEventEndsAt: null,
     };
+
+    // Cards dos itens (foto + legenda) vinculados ao item p/ lance via "Responder".
+    await this.sendItemCards(memory, createdAuctionIds);
+
+    return memory;
   }
 
   /**
@@ -604,10 +613,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       this.listGroups.set(list.groupId, list);
     }
 
-    const created = await this.syncNewItems(list);
+    const createdIds = await this.syncNewItems(list);
+    await this.sendItemCards(list, createdIds);
     const text = await this.listToText(list);
     await this.emit(list.tenantId, list.groupId, text);
-    return { created, itemCount: (await this.listAuctionSnapshot(list)).length };
+    return { created: createdIds.length, itemCount: (await this.listAuctionSnapshot(list)).length };
   }
 
   /**
@@ -623,8 +633,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /**
    * Cria leilões apenas para os itens que ainda não possuem leilão no evento.
    * Itens já em andamento (com lances) são preservados intactos.
+   * Devolve os ids dos leilões criados (para envio dos cards de item).
    */
-  private async syncNewItems(list: ActiveListMemory): Promise<number> {
+  private async syncNewItems(list: ActiveListMemory): Promise<string[]> {
     const items = await this.prisma.item.findMany({
       where: { tenantId: list.tenantId, auctionEventId: list.eventId },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
@@ -640,10 +651,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       select: { minBidStep: true },
     });
 
-    let created = 0;
+    const created: string[] = [];
     for (const item of items) {
       if (hasAuctionFor.has(item.id)) continue;
-      await this.prisma.auction.create({
+      const itemDuration = item.durationSeconds ?? 0;
+      const auction = await this.prisma.auction.create({
         data: {
           tenantId: list.tenantId,
           groupId: list.internalGroupId,
@@ -651,21 +663,21 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
           auctionEventId: list.eventId,
           productName: item.name,
           initialValue: item.initialValue,
-          durationSeconds: item.durationSeconds,
+          durationSeconds: itemDuration,
           status: AuctionStatus.OPEN,
           startedAt: new Date(),
           minBidStep: event?.minBidStep ?? null,
           endsAt:
-            item.durationSeconds > 0
-              ? new Date(Date.now() + item.durationSeconds * 1000)
+            itemDuration > 0
+              ? new Date(Date.now() + itemDuration * 1000)
               : null,
         },
       });
+      created.push(auction.id);
       await this.prisma.item.update({
         where: { id: item.id },
         data: { status: ItemStatus.ON_AUCTION },
       });
-      created += 1;
     }
     return created;
   }
@@ -1296,7 +1308,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         endsAt: true,
         durationSeconds: true,
         item: {
-          select: { order: true, initialValue: true, imageUrl: true },
+          select: { order: true, initialValue: true, imageUrl: true, number: true, description: true },
         },
         bids: {
           where: { isCurrentLeader: true },
@@ -1317,10 +1329,12 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     return auctions.map((auction, index) => {
       const leader = auction.bids[0];
       return {
-        number: index + 1,
+        // Nº exibido = número registrado do item; itens legados usam a posição.
+        number: auction.item?.number ?? index + 1,
         auctionId: auction.id,
         itemId: auction.itemId ?? null,
         name: auction.productName,
+        description: auction.item?.description ?? null,
         status: auction.status,
         initialValue: auction.initialValue,
         currentAmount: leader?.amount ?? auction.item?.initialValue ?? auction.initialValue,
@@ -1377,6 +1391,46 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   private async announceList(groupId: string, list: ActiveListMemory): Promise<void> {
     const text = await this.listToText(list);
     await this.emit(list.tenantId, groupId, text);
+  }
+
+  /**
+   * Envia um card por item recém-aberto (foto quando houver + legenda com nº,
+   * nome, descrição, valor inicial e duração se existir) e vincula cada mensagem
+   * enviada ao item: o participante pode dar lance respondendo ("Responder") a
+   * card com apenas o valor.
+   */
+  private async sendItemCards(list: ActiveListMemory, auctionIds: string[]): Promise<void> {
+    if (auctionIds.length === 0) return;
+
+    const snapshot = await this.listAuctionSnapshot(list);
+    const byAuctionId = new Map(snapshot.map((row) => [row.auctionId, row]));
+
+    for (const auctionId of auctionIds) {
+      const row = byAuctionId.get(auctionId);
+      if (!row) continue;
+      await this.emit(
+        list.tenantId,
+        list.groupId,
+        this.itemCardText(row),
+        imageUrlToLocalPath(row.imageUrl),
+        { auctionId: row.auctionId, itemId: row.itemId, itemName: row.name },
+      );
+      await new Promise((resolve) => setTimeout(resolve, WHATSAPP_ITEM_CARD_DELAY_MS));
+    }
+  }
+
+  /** Texto do card de um item (mensagem inicial com a foto do item). */
+  private itemCardText(row: ListAuctionEntry): string {
+    const lines = [`*${String(row.number).padStart(2, '0')}* • ${row.name}`];
+    if (row.description) {
+      lines.push(row.description);
+    }
+    lines.push(`💰 Valor inicial: *${formatCurrency(row.initialValue)}*`);
+    if (row.durationSeconds > 0) {
+      lines.push(`⏱️ Tempo: *${this.formatDuration(row.durationSeconds)}*`);
+    }
+    lines.push('', '_Responda esta mensagem com o valor para dar lance._');
+    return lines.join('\n');
   }
 
   /**

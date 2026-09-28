@@ -124,11 +124,12 @@ export interface Item {
   id: string;
   tenantId: string;
   auctionEventId: string | null;
+  number: number | null;
   name: string;
   description: string | null;
   imageUrl: string | null;
   initialValue: string;
-  durationSeconds: number;
+  durationSeconds: number | null;
   status: ItemStatus;
   createdAt: string;
   updatedAt: string;
