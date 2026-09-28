@@ -1175,7 +1175,7 @@ export function AuctionsPage() {
                   </h4>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {listStarted
-                      ? 'A lista já está em andamento no WhatsApp. Cadastre novos itens e clique em "Atualizar Lista" para reenviar a lista atualizada — os lances já feitos são mantidos.'
+                      ? 'A lista já está em andamento no WhatsApp. Itens cadastrados agora são publicados automaticamente no grupo (foto, valor e Nº) e aceitam lances por resposta à mensagem. "Atualizar Lista" reenvia o status completo — os lances já feitos são mantidos.'
                       : 'Abre um leilão simultâneo por item. Os participantes dão lances como 01 - 22,00. Se um status periódico foi definido, o bot reenvia a lista automaticamente.'}
                   </p>
                 </div>

@@ -286,6 +286,7 @@ model Auction {
   closedAt      DateTime?
   winnerBidId   String?  @unique
   paymentStatus PaymentStatus @default(PENDING)
+  cardSentAt    DateTime?     // confirmação de publicação do card do item no WhatsApp (idempotência)
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   group         Group         @relation(fields: [groupId], references: [id])

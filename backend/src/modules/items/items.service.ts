@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Auction, Item, ItemStatus, Prisma, Role, SessionStatus } from '@prisma/client';
@@ -24,6 +25,8 @@ import { CreateItemDto, StartItemAuctionDto } from './dto/item.dto';
  */
 @Injectable()
 export class ItemsService {
+  private readonly logger = new Logger(ItemsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auctionsService: AuctionsService,
@@ -94,8 +97,9 @@ export class ItemsService {
       order = dto.order ?? maxOrder + 1;
     }
 
+    let created: Item;
     try {
-      return await this.prisma.item.create({
+      created = await this.prisma.item.create({
         data: {
           tenantId,
           auctionEventId: dto.auctionEventId ?? null,
@@ -117,6 +121,24 @@ export class ItemsService {
       }
       throw error;
     }
+
+    // Lista EM ANDAMENTO: publica somente este item no grupo na hora (card com
+    // foto/texto + vínculo p/ lance via "Responder"). Se a lista ainda não foi
+    // iniciada, o motor não faz nada e o item sai no início normal. Falha de
+    // envio NÃO desfaz o cadastro: o erro é registrado e o item fica pendente
+    // de reenvio ("Atualizar lista" do painel reenvia cards não confirmados).
+    if (created.auctionEventId) {
+      try {
+        await this.engine.publishItemToList(tenantId, created.auctionEventId, created.id);
+      } catch (error) {
+        this.logger.error(
+          `Item ${created.id} salvo, mas falhou ao publicar no WhatsApp: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return created;
   }
 
   async list(

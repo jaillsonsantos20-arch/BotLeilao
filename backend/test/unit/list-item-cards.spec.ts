@@ -54,7 +54,12 @@ const ITEMS: TestItem[] = [
   },
 ];
 
-function snapshotRow(item: TestItem, auctionId: string, index: number) {
+function snapshotRow(
+  item: TestItem,
+  auctionId: string,
+  index: number,
+  cardSentAt: Date | null = null,
+) {
   return {
     id: auctionId,
     itemId: item.id,
@@ -63,6 +68,7 @@ function snapshotRow(item: TestItem, auctionId: string, index: number) {
     initialValue: item.initialValue,
     endsAt: item.durationSeconds ? new Date(Date.now() + item.durationSeconds * 1000) : null,
     durationSeconds: item.durationSeconds ?? 0,
+    cardSentAt,
     item: {
       order: item.order,
       initialValue: item.initialValue,
@@ -82,7 +88,14 @@ function buildEngine(options?: { items?: TestItem[]; allAuctioned?: boolean }) {
   const existingAuctions = (options?.allAuctioned ? items : []).map((item) => ({
     itemId: item.id,
   }));
-  const snapshotRows = items.map((item, index) => snapshotRow(item, `auc-${index + 1}`, index));
+  // Leilões já existentes já foram publicados (cardSentAt preenchido).
+  const publishedAt = options?.allAuctioned ? new Date() : null;
+  const snapshotRows = items.map((item, index) =>
+    snapshotRow(item, `auc-${index + 1}`, index, publishedAt),
+  );
+  const cardSentAtByAuction = new Map<string, Date | null>(
+    snapshotRows.map((row) => [row.id, row.cardSentAt]),
+  );
 
   const prisma = {
     auctionEvent: {
@@ -94,16 +107,36 @@ function buildEngine(options?: { items?: TestItem[]; allAuctioned?: boolean }) {
     },
     group: { findFirst: jest.fn().mockResolvedValue(GROUP) },
     auction: {
-      findFirst: jest.fn().mockResolvedValue(null),
+      findFirst: jest
+        .fn()
+        .mockImplementation((args: { where?: Record<string, unknown> }) => {
+          const keys = args?.where ? Object.keys(args.where) : [];
+          // Consulta { id } => leitura de cardSentAt antes do envio.
+          if (args.where && keys.length === 1 && keys[0] === 'id') {
+            return Promise.resolve({
+              cardSentAt: cardSentAtByAuction.get(args.where.id as string) ?? null,
+            });
+          }
+          // otherOpen (checagem de leilão ativo no grupo) => nenhum.
+          return Promise.resolve(null);
+        }),
       findMany: jest.fn().mockImplementation((args: { select?: Record<string, unknown> }) => {
         // syncNewItems consulta apenas { itemId: true }; o snapshot tem select completo.
         const keys = args?.select ? Object.keys(args.select) : [];
         const isSyncQuery = keys.length === 1 && keys[0] === 'itemId';
         return Promise.resolve(isSyncQuery ? existingAuctions : snapshotRows);
       }),
+      update: jest.fn().mockImplementation((args: { where: { id: string }; data: { cardSentAt?: Date } }) => {
+        if (args.data.cardSentAt) {
+          cardSentAtByAuction.set(args.where.id, args.data.cardSentAt);
+        }
+        return Promise.resolve({ id: args.where.id, ...args.data });
+      }),
       create: jest.fn().mockImplementation(() => {
         auctionSeq += 1;
-        return Promise.resolve({ id: `auc-${auctionSeq}` });
+        const id = `auc-${auctionSeq}`;
+        cardSentAtByAuction.set(id, null);
+        return Promise.resolve({ id, cardSentAt: null, status: 'OPEN' });
       }),
     },
     item: {

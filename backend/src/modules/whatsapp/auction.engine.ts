@@ -75,6 +75,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /** messageId -> contexto de item para suporte ao "Responder" do WhatsApp */
   private readonly replyContexts = new Map<string, ReplyContext>();
 
+  /** chave de lock (ex.: item/auction) -> cadeia de execução (idempotência) */
+  private readonly locks = new Map<string, Promise<unknown>>();
+
   /** assinantes para envio de mensagens (desacopla o transporte) */
   private readonly subscribers = new Set<MessageSender>();
 
@@ -614,10 +617,125 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     }
 
     const createdIds = await this.syncNewItems(list);
-    await this.sendItemCards(list, createdIds);
+    // Publica os cards pendentes: recém-criados + os que falharam em envios
+    // anteriores (reenvio). Cards já confirmados não são reenviados.
+    await this.sendItemCards(list);
     const text = await this.listToText(list);
     await this.emit(list.tenantId, list.groupId, text);
     return { created: createdIds.length, itemCount: (await this.listAuctionSnapshot(list)).length };
+  }
+
+  /**
+   * Publica um item recém-cadastro quando a lista já está EM ANDAMENTO.
+   *
+   * - Valida que o item pertence ao leilão e está apto a receber lances;
+   * - cria o leilão do item (se ainda não existir) com a duração iniciando na
+   *   publicação (duração NULL => sem timer individual);
+   * - envia SOMENTE o card deste item (foto ou texto) ao grupo, vinculando a
+   *   mensagem ao item para lances via "Responder";
+   * - idempotente: não recria leilão nem reenvia card já confirmado
+   *   (`cardSentAt`); envio falho fica pendente de reenvio sem vínculo falso.
+   *
+   * Quando a lista ainda não foi iniciada, não faz nada (o item é publicado
+   * normalmente no início da lista).
+   */
+  async publishItemToList(
+    tenantId: string,
+    eventId: string,
+    itemId: string,
+  ): Promise<{
+    published: boolean;
+    skipped?: 'event_not_open' | 'not_eligible' | 'not_started' | 'already_published';
+    auctionId?: string;
+  }> {
+    const event = await this.prisma.auctionEvent.findFirst({
+      where: { id: eventId, tenantId },
+      select: { id: true, status: true, minBidStep: true },
+    });
+    if (!event || event.status !== AuctionEventStatus.OPEN) {
+      return { published: false, skipped: 'event_not_open' };
+    }
+
+    // O item precisa pertencer a este leilão (nunca publicar no evento errado).
+    const item = await this.prisma.item.findFirst({
+      where: { id: itemId, tenantId, auctionEventId: eventId },
+      select: { id: true, name: true, status: true, durationSeconds: true, initialValue: true },
+    });
+    if (!item) {
+      return { published: false, skipped: 'not_eligible' };
+    }
+
+    // AGENDADO / NÃO INICIADO: só persiste; o card sai no início da lista.
+    const list = this.findListByEvent(eventId, tenantId);
+    if (!list) {
+      return { published: false, skipped: 'not_started' };
+    }
+
+    const result = await this.withLock(`item:${itemId}`, async () => {
+      let auction = await this.prisma.auction.findFirst({
+        where: { tenantId, auctionEventId: eventId, itemId },
+        select: { id: true, cardSentAt: true, status: true },
+      });
+
+      if (auction?.cardSentAt) {
+        return { skipped: 'already_published' as const };
+      }
+      if (auction && String(auction.status) !== AuctionStatus.OPEN) {
+        // Leilão do item já encerrado sem card publicado: não anuncia atrasado.
+        return { skipped: 'not_eligible' as const };
+      }
+
+      if (!auction) {
+        // Apto a receber lances: item disponível e sem leilão duplicado.
+        if (item.status !== ItemStatus.AVAILABLE) {
+          return { skipped: 'not_eligible' as const };
+        }
+        const duration = item.durationSeconds ?? 0;
+        auction = await this.prisma.auction.create({
+          data: {
+            tenantId,
+            groupId: list.internalGroupId,
+            itemId: item.id,
+            auctionEventId: event.id,
+            productName: item.name,
+            initialValue: item.initialValue,
+            durationSeconds: duration,
+            status: AuctionStatus.OPEN,
+            startedAt: new Date(),
+            minBidStep: event.minBidStep ?? null,
+            // Mesma regra dos itens publicados na abertura: a duração começa
+            // AGORA; NULL => sem timer individual (encerra só pelo painel).
+            endsAt: duration > 0 ? new Date(Date.now() + duration * 1000) : null,
+          },
+          select: { id: true, cardSentAt: true, status: true },
+        });
+        await this.prisma.item.update({
+          where: { id: item.id },
+          data: { status: ItemStatus.ON_AUCTION },
+        });
+      }
+
+      // Envia SOMENTE o card deste item (foto ou texto + vínculo de resposta).
+      await this.sendItemCards(list, [auction.id]);
+
+      const confirmed = await this.prisma.auction.findFirst({
+        where: { id: auction.id },
+        select: { cardSentAt: true },
+      });
+      if (!confirmed?.cardSentAt) {
+        // Item salvo e leilão criado, mas o envio falhou: erro já registrado,
+        // sem vínculo falso de Message ID; fica pendente de reenvio.
+        throw new Error(
+          `Falha ao publicar o item "${item.name}" no WhatsApp do grupo ${list.groupId}.`,
+        );
+      }
+      return { auctionId: auction.id };
+    });
+
+    if ('skipped' in result) {
+      return { published: false, skipped: result.skipped };
+    }
+    return { published: true, auctionId: result.auctionId };
   }
 
   /**
@@ -654,29 +772,38 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     const created: string[] = [];
     for (const item of items) {
       if (hasAuctionFor.has(item.id)) continue;
-      const itemDuration = item.durationSeconds ?? 0;
-      const auction = await this.prisma.auction.create({
-        data: {
-          tenantId: list.tenantId,
-          groupId: list.internalGroupId,
-          itemId: item.id,
-          auctionEventId: list.eventId,
-          productName: item.name,
-          initialValue: item.initialValue,
-          durationSeconds: itemDuration,
-          status: AuctionStatus.OPEN,
-          startedAt: new Date(),
-          minBidStep: event?.minBidStep ?? null,
-          endsAt:
-            itemDuration > 0
-              ? new Date(Date.now() + itemDuration * 1000)
-              : null,
-        },
-      });
-      created.push(auction.id);
-      await this.prisma.item.update({
-        where: { id: item.id },
-        data: { status: ItemStatus.ON_AUCTION },
+      // Lock por item: serializa com publishItemToList (evita criar dois
+      // leilões para o mesmo item em requisições simultâneas).
+      await this.withLock(`item:${item.id}`, async () => {
+        const existing = await this.prisma.auction.findFirst({
+          where: { tenantId: list.tenantId, auctionEventId: list.eventId, itemId: item.id },
+          select: { id: true },
+        });
+        if (existing) return;
+        const itemDuration = item.durationSeconds ?? 0;
+        const auction = await this.prisma.auction.create({
+          data: {
+            tenantId: list.tenantId,
+            groupId: list.internalGroupId,
+            itemId: item.id,
+            auctionEventId: list.eventId,
+            productName: item.name,
+            initialValue: item.initialValue,
+            durationSeconds: itemDuration,
+            status: AuctionStatus.OPEN,
+            startedAt: new Date(),
+            minBidStep: event?.minBidStep ?? null,
+            endsAt:
+              itemDuration > 0
+                ? new Date(Date.now() + itemDuration * 1000)
+                : null,
+          },
+        });
+        created.push(auction.id);
+        await this.prisma.item.update({
+          where: { id: item.id },
+          data: { status: ItemStatus.ON_AUCTION },
+        });
       });
     }
     return created;
@@ -1307,6 +1434,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         initialValue: true,
         endsAt: true,
         durationSeconds: true,
+        cardSentAt: true,
         item: {
           select: { order: true, initialValue: true, imageUrl: true, number: true, description: true },
         },
@@ -1343,6 +1471,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         imageUrl: auction.item?.imageUrl ?? null,
         endsAt: auction.endsAt ?? new Date(),
         durationSeconds: auction.durationSeconds,
+        cardSentAt: auction.cardSentAt ?? null,
       };
     });
   }
@@ -1394,28 +1523,79 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Envia um card por item recém-aberto (foto quando houver + legenda com nº,
-   * nome, descrição, valor inicial e duração se existir) e vincula cada mensagem
-   * enviada ao item: o participante pode dar lance respondendo ("Responder") a
-   * card com apenas o valor.
+   * Envia o card de cada item pendente de publicação (foto quando houver +
+   * legenda com nº, nome, descrição, valor inicial e duração se existir) e
+   * vincula cada mensagem enviada ao item: o participante pode dar lance
+   * respondendo ("Responder") a card com apenas o valor.
+   *
+   * Idempotência: só publica cards com `cardSentAt` nulo (e leilão aberto) e
+   * marca a coluna apenas após o envio confirmado - retry/refresh/duplo clique
+   * não reenviam a mesma mensagem. Envio falho permanece pendente (reenvio
+   * posterior via "Atualizar lista" do painel).
+   *
+   * `auctionIds` restringe o envio a um subconjunto (ex.: um único item novo);
+   * sem parâmetro, envia todos os pendentes do evento.
    */
-  private async sendItemCards(list: ActiveListMemory, auctionIds: string[]): Promise<void> {
-    if (auctionIds.length === 0) return;
-
+  private async sendItemCards(
+    list: ActiveListMemory,
+    auctionIds?: string[],
+  ): Promise<void> {
     const snapshot = await this.listAuctionSnapshot(list);
-    const byAuctionId = new Map(snapshot.map((row) => [row.auctionId, row]));
+    const wanted = auctionIds ? new Set(auctionIds) : null;
+    const pending = snapshot.filter((row) => {
+      if (wanted && !wanted.has(row.auctionId)) return false;
+      if (row.cardSentAt) return false; // já publicado
+      // Item já encerrado sem ter sido publicado: não anuncia atrasado.
+      return String(row.status) === AuctionStatus.OPEN;
+    });
 
-    for (const auctionId of auctionIds) {
-      const row = byAuctionId.get(auctionId);
-      if (!row) continue;
-      await this.emit(
-        list.tenantId,
-        list.groupId,
-        this.itemCardText(row),
-        imageUrlToLocalPath(row.imageUrl),
-        { auctionId: row.auctionId, itemId: row.itemId, itemName: row.name },
-      );
-      await new Promise((resolve) => setTimeout(resolve, WHATSAPP_ITEM_CARD_DELAY_MS));
+    for (let index = 0; index < pending.length; index += 1) {
+      const row = pending[index];
+      await this.withLock(`card:${row.auctionId}`, async () => {
+        const fresh = await this.prisma.auction.findFirst({
+          where: { id: row.auctionId },
+          select: { cardSentAt: true },
+        });
+        if (!fresh || fresh.cardSentAt) return; // outro fluxo já publicou
+
+        const sent = await this.emit(
+          list.tenantId,
+          list.groupId,
+          this.itemCardText(row),
+          imageUrlToLocalPath(row.imageUrl),
+          { auctionId: row.auctionId, itemId: row.itemId, itemName: row.name },
+        );
+        if (!sent) {
+          // Erro registrado; o card continua pendente de reenvio e o vínculo
+          // de Message ID NÃO é criado (emit só registra em envio confirmado).
+          this.logger.warn(
+            `Card do item "${row.name}" não pôde ser enviado ao grupo ${list.groupId}; permanece pendente de reenvio.`,
+          );
+          return;
+        }
+        await this.prisma.auction.update({
+          where: { id: row.auctionId },
+          data: { cardSentAt: new Date() },
+        });
+      });
+      if (index < pending.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, WHATSAPP_ITEM_CARD_DELAY_MS));
+      }
+    }
+  }
+
+  /**
+   * Executa `fn` serializando pela chave (evita criação/envio duplicado do
+   * mesmo item por requisições concorrentes).
+   */
+  private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => fn());
+    this.locks.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (this.locks.get(key) === current) this.locks.delete(key);
     }
   }
 
@@ -1746,18 +1926,30 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     text: string,
     mediaPath?: string,
     replyContext?: ReplyContext,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const results = await Promise.allSettled(
       Array.from(this.subscribers).map((send) => send(tenantId, groupId, text, mediaPath)),
     );
-    if (!replyContext) return;
-    // Associa as mensagens enviadas ao item para que o participante possa
-    // responder ("Responder" do WhatsApp) com apenas o valor do lance.
+    let delivered = false;
     for (const result of results) {
-      if (result.status === 'fulfilled' && typeof result.value === 'string' && result.value) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Falha ao enviar mensagem ao grupo ${groupId}: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`,
+        );
+        continue;
+      }
+      delivered = true;
+      // Associa as mensagens enviadas ao item para que o participante possa
+      // responder ("Responder" do WhatsApp) com apenas o valor do lance.
+      // Só registra o vínculo quando o envio foi confirmado - nunca um
+      // Message ID falso quando o envio falhou.
+      if (replyContext && typeof result.value === 'string' && result.value) {
         this.registerReplyContext(result.value, replyContext);
       }
     }
+    return delivered;
   }
 
   private async react(message: Message, emoji: string): Promise<void> {

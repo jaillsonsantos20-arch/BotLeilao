@@ -88,6 +88,7 @@ export interface ListAuctionEntry {
   imageUrl: string | null;
   endsAt: Date;
   durationSeconds: number;
+  cardSentAt: Date | null;
 }
 
 /**

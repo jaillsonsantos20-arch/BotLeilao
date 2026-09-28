@@ -18,7 +18,11 @@ function buildService() {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(baseItem),
       update: jest.fn().mockResolvedValue({}),
-      create: jest.fn().mockImplementation((args: { data: unknown }) => Promise.resolve(args.data)),
+      create: jest
+        .fn()
+        .mockImplementation((args: { data: Record<string, unknown> }) =>
+          Promise.resolve({ id: 'item-new', ...args.data }),
+        ),
     },
     group: { findFirst: jest.fn() },
   };
@@ -26,7 +30,10 @@ function buildService() {
   const auctionEventsService = { ensureOpen: jest.fn().mockResolvedValue({}) };
   const auctionsService = { startAuction: jest.fn(), placeBid: jest.fn() };
   const whatsappManager = { sessionStatus: jest.fn() };
-  const engine = { launchAuction: jest.fn() };
+  const engine = {
+    launchAuction: jest.fn(),
+    publishItemToList: jest.fn().mockResolvedValue({ published: true, auctionId: 'auc-new' }),
+  };
   const planLimits = { assertCanAddItemToEvent: jest.fn().mockResolvedValue(undefined) };
 
   const service = new ItemsService(
@@ -38,7 +45,7 @@ function buildService() {
     planLimits as never,
   );
 
-  return { service, prisma, auctionEventsService, planLimits, whatsappManager, auctionsService, baseItem };
+  return { service, prisma, auctionEventsService, planLimits, whatsappManager, auctionsService, engine, baseItem };
 }
 
 describe('ItemsService.create — duração opcional (NULL = sem tempo)', () => {
@@ -297,5 +304,57 @@ describe('ItemsService.startAuctionOnWhatsApp — item sem duração', () => {
       'tenant-1',
       expect.objectContaining({ durationSeconds: 120 }),
     );
+  });
+});
+
+describe('ItemsService.create — publicação imediata quando a lista está em andamento', () => {
+  it('publica o item no grupo quando ele pertence a um evento', async () => {
+    const { service, engine } = buildService();
+
+    const item = await service.create('tenant-1', {
+      name: 'Frango caipira',
+      initialValue: 70,
+      auctionEventId: 'event-1',
+    });
+
+    expect(engine.publishItemToList).toHaveBeenCalledTimes(1);
+    expect(engine.publishItemToList).toHaveBeenCalledWith('tenant-1', 'event-1', item.id);
+  });
+
+  it('item avulso (sem evento) não tenta publicar', async () => {
+    const { service, engine } = buildService();
+
+    await service.create('tenant-1', { name: 'Avulso', initialValue: 10 });
+
+    expect(engine.publishItemToList).not.toHaveBeenCalled();
+  });
+
+  it('falha ao publicar NÃO desfaz o cadastro do item', async () => {
+    const { service, engine } = buildService();
+    engine.publishItemToList.mockRejectedValueOnce(new Error('whatsapp offline'));
+
+    await expect(
+      service.create('tenant-1', {
+        name: 'Frango caipira',
+        initialValue: 70,
+        auctionEventId: 'event-1',
+      }),
+    ).resolves.toMatchObject({ id: 'item-new', name: 'Frango caipira' });
+
+    expect(engine.publishItemToList).toHaveBeenCalledTimes(1);
+  });
+
+  it('quando a lista ainda não foi iniciada, o motor publica depois (skipped not_started)', async () => {
+    const { service, engine } = buildService();
+    engine.publishItemToList.mockResolvedValueOnce({ published: false, skipped: 'not_started' });
+
+    await expect(
+      service.create('tenant-1', {
+        name: 'Agendado',
+        initialValue: 10,
+        auctionEventId: 'event-1',
+      }),
+    ).resolves.toMatchObject({ id: 'item-new' });
+    expect(engine.publishItemToList).toHaveBeenCalledWith('tenant-1', 'event-1', 'item-new');
   });
 });
