@@ -89,7 +89,8 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
   private async watchConnectingClients(): Promise<void> {
     const now = Date.now();
     for (const [tenantId, startedAt] of this.clientAttemptAt) {
-      if (!this.clients.has(tenantId)) {
+      const client = this.clients.get(tenantId);
+      if (!client) {
         this.clientAttemptAt.delete(tenantId);
         continue;
       }
@@ -104,10 +105,70 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
+      // O evento "ready" às vezes não dispara mesmo com a sessão totalmente
+      // funcional (utilitários injetados e mensagens saindo normalmente).
+      // Destruir nesse caso derruba um WhatsApp saudável e falha todo envio
+      // feito durante a recriação do browser.
+      if (await this.isClientUsable(client)) {
+        this.clientAttemptAt.delete(tenantId);
+        await this.markConnected(tenantId);
+        continue;
+      }
+
       this.logger.warn(
         `WhatsApp do tenant ${tenantId} preso em CONNECTING há ${Math.round((now - startedAt) / 1000)}s — recriando cliente.`,
       );
       await this.connect(tenantId);
+    }
+  }
+
+  /**
+   * Marca a sessão como conectada quando o cliente responde a sondagem,
+   * contornando o evento `ready` que não dispara.
+   */
+  private async markConnected(tenantId: string): Promise<void> {
+    await this.persistSession(tenantId, {
+      status: SessionStatus.CONNECTED,
+      lastConnectedAt: new Date(),
+      lastError: null,
+    });
+    this.logger.log(
+      `Sessão do tenant ${tenantId} funcional sem evento "ready" — marcada como conectada.`,
+    );
+  }
+
+  /**
+   * Sondagem real de utilizabilidade: a página do WhatsApp Web precisa ter os
+   * utilitários injetados (`window.WWebJS`). Sem eles qualquer `getChatById`
+   * falha com "Cannot read properties of undefined (reading 'getChat')" -
+   * exatamente o erro visto quando o cliente está carregando ou foi recriado.
+   */
+  private async isClientUsable(client: Client): Promise<boolean> {
+    const page = client.pupPage;
+    if (!page || page.isClosed()) return false;
+    try {
+      const probe = page.evaluate(
+        () =>
+          typeof (globalThis as unknown as { WWebJS?: unknown }).WWebJS !==
+          'undefined',
+      );
+      // Timer é limpo quando a sondagem responde (senão o processo fica vivo
+      // 5s depois de cada envio, segurando o event loop).
+      return await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 5000);
+        probe.then(
+          (usable) => {
+            clearTimeout(timer);
+            resolve(usable);
+          },
+          () => {
+            clearTimeout(timer);
+            resolve(false);
+          },
+        );
+      });
+    } catch {
+      return false;
     }
   }
 
@@ -221,7 +282,21 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
     const session = await this.prisma.whatsAppSession.findUnique({
       where: { clientId: `tenant-${tenantId}` },
     });
-    return { status: session?.status ?? SessionStatus.DISCONNECTED };
+    const status = session?.status ?? SessionStatus.DISCONNECTED;
+
+    // Autocorreção: com `ready` não disparando, o status fica preso em
+    // CONNECTING mesmo com o cliente funcionando (painel mostra "Conectando"
+    // e o publish de item recusa o envio). Sondagem decide o status real.
+    if (status === SessionStatus.CONNECTING) {
+      const client = this.clients.get(tenantId);
+      if (client && (await this.isClientUsable(client))) {
+        this.clientAttemptAt.delete(tenantId);
+        await this.markConnected(tenantId);
+        return { status: SessionStatus.CONNECTED };
+      }
+    }
+
+    return { status };
   }
 
   /**
@@ -262,17 +337,23 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const client = this.clients.get(tenantId);
       if (!client) {
-        this.logger.warn(
-          `Cliente inexistente para o tenant ${tenantId}. Mensagem não enviada ao grupo ${groupId}.`,
+        // Rejeitada de propósito: o engine só marca o card como publicado
+        // quando o envio é confirmado - resolver aqui criaria um vínculo
+        // falso e o card nunca mais seria enviado.
+        throw new Error(
+          `Cliente WhatsApp inexistente para o tenant ${tenantId}; mensagem não enviada ao grupo ${groupId}.`,
         );
-        return undefined;
       }
 
       try {
+        if (!(await this.isClientUsable(client))) {
+          // Evita o erro opaco "Cannot read properties of undefined (reading
+          // 'getChat')": sem os utilitários injetados a página não responde.
+          throw new Error(`sessão do tenant ${tenantId} ainda não está pronta`);
+        }
         const chat = await client.getChatById(groupId);
         if (!chat) {
-          this.logger.warn(`Chat não encontrado para o grupo ${groupId}.`);
-          return undefined;
+          throw new Error(`chat não encontrado para o grupo ${groupId}`);
         }
         if (media) {
           const sent = await chat.sendMessage(media, { caption: text });
