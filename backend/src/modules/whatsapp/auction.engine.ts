@@ -1578,6 +1578,14 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         if (!fresh || fresh.cardSentAt) return; // outro fluxo já publicou
 
         const mediaPath = imageUrlToLocalPath(row.imageUrl);
+        if (!row.imageUrl) {
+          // Item nunca recebeu foto (upload falhou ou não foi feito): caso
+          // silencioso - sem este log é impossível distinguir de "arquivo
+          // sumiu" só olhando o output do backend em produção.
+          this.logger.log(
+            `Item "${row.name}" sem foto (imageUrl vazio); card será enviado apenas com o texto.`,
+          );
+        }
         if (row.imageUrl && !mediaPath) {
           // URL externa/inválida: o card sai só com o texto e ninguém percebe.
           this.logger.warn(
