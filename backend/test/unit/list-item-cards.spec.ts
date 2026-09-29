@@ -82,7 +82,11 @@ function snapshotRow(
   };
 }
 
-function buildEngine(options?: { items?: TestItem[]; allAuctioned?: boolean }) {
+function buildEngine(options?: {
+  items?: TestItem[];
+  allAuctioned?: boolean;
+  mediaFails?: boolean;
+}) {
   const items = options?.items ?? ITEMS;
   let auctionSeq = 0;
   const existingAuctions = (options?.allAuctioned ? items : []).map((item) => ({
@@ -150,6 +154,9 @@ function buildEngine(options?: { items?: TestItem[]; allAuctioned?: boolean }) {
   const sent: Array<{ text: string; mediaPath?: string }> = [];
   let msgSeq = 0;
   engine.subscribe(async (_tenantId, _groupId, text, mediaPath) => {
+    if (options?.mediaFails && mediaPath) {
+      throw new Error('falha ao enviar a imagem');
+    }
     msgSeq += 1;
     sent.push({ text, mediaPath });
     return `msg-${msgSeq}`;
@@ -166,6 +173,8 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
 
     expect(result.created).toBe(2);
     expect(result.itemCount).toBe(2);
+    expect(result.cardsSent).toBe(2);
+    expect(result.cardsFailed).toBe(0);
 
     // 2 cards + 1 lista textual (status) = 3 mensagens
     expect(sent).toHaveLength(3);
@@ -219,6 +228,8 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
 
     expect(result.created).toBe(0);
     expect(result.itemCount).toBe(2);
+    expect(result.cardsSent).toBe(0);
+    expect(result.cardsFailed).toBe(0);
     // Só a lista textual — nenhum card reenviado
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toContain('EM ANDAMENTO');
@@ -237,5 +248,30 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
     expect(sent[0].text).toContain('*07* • Item Sete');
     // number null => posição (índice 1 + 1 = 2)
     expect(sent[1].text).toContain('*02* • Item Sem Nº');
+  });
+
+  it('reporta cards com falha sem impedir o envio da lista textual', async () => {
+    const { engine, sent } = buildEngine({ mediaFails: true });
+
+    const result = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
+
+    // Card 1 tem foto (falha), card 2 é só texto (ok) => lista segue sai.
+    expect(result.cardsSent).toBe(1);
+    expect(result.cardsFailed).toBe(1);
+    expect(result.itemCount).toBe(2);
+    expect(sent).toHaveLength(2);
+    expect(sent[0].text).toContain('*02* • Refrigerante');
+    expect(sent[1].text).toContain('EM ANDAMENTO');
+  });
+
+  it('lança erro quando nada chega ao grupo (WhatsApp sem cliente conectado)', async () => {
+    const { prisma } = buildEngine();
+    // Sem `subscribe`: emit não tem quem envie => openListFromPanel precisa
+    // falhar em vez de devolver sucesso silencioso ao painel.
+    const offline = new AuctionEngine(prisma as never, {} as never, {} as never);
+
+    await expect(
+      offline.openListFromPanel('tenant-1', 'event-1', 'group-internal'),
+    ).rejects.toThrow('não pôde ser enviada ao WhatsApp');
   });
 });

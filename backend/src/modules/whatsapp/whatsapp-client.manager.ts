@@ -240,7 +240,24 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
   ): Promise<string | undefined> {
     const maxAttempts = 3;
     let lastError: unknown = null;
-    const media = mediaPath && existsSync(mediaPath) ? MessageMedia.fromFilePath(mediaPath) : null;
+    let media: MessageMedia | null = null;
+    if (mediaPath) {
+      if (!existsSync(mediaPath)) {
+        // Arquivo não encontrado => volume/caminho divergente. Segue apenas
+        // com o texto para que o card (nº, descrição e valor) não se perca.
+        this.logger.warn(
+          `Imagem "${mediaPath}" não encontrada no servidor; enviando apenas o texto ao grupo ${groupId}.`,
+        );
+      } else {
+        try {
+          media = MessageMedia.fromFilePath(mediaPath);
+        } catch (error) {
+          this.logger.warn(
+            `Imagem "${mediaPath}" ilegível (${(error as Error).message}); enviando apenas o texto ao grupo ${groupId}.`,
+          );
+        }
+      }
+    }
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const client = this.clients.get(tenantId);
@@ -272,6 +289,14 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         this.logger.error(
           `Tentativa ${attempt}/${maxAttempts} ao enviar ao grupo ${groupId}: ${(error as Error).message}`,
         );
+        if (media) {
+          // Nunca descartar o card por causa da foto: reenvia apenas o texto
+          // nas tentativas restantes (a foto pode ser publicada depois).
+          this.logger.warn(
+            `Falha ao enviar a imagem ao grupo ${groupId}; seguindo apenas com o texto do card.`,
+          );
+          media = null;
+        }
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
         }

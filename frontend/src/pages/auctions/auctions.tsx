@@ -359,6 +359,7 @@ export function AuctionsPage() {
 
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
+  const [listWarning, setListWarning] = useState<string | null>(null);
 
   const [scheduleTarget, setScheduleTarget] = useState<{ item: Item; auction: Auction } | null>(null);
   const [scheduleEndAt, setScheduleEndAt] = useState('');
@@ -453,17 +454,24 @@ export function AuctionsPage() {
 
   const startList = useMutation({
     mutationFn: async (params: { eventId: string; groupId: string }) => {
-      const response = await api.post<ApiEnvelope<{ itemCount: number }>>(
-        `/auction-events/${params.eventId}/start`,
-        { groupId: params.groupId },
-      );
+      const response = await api.post<
+        ApiEnvelope<{ itemCount: number; cardsSent?: number; cardsFailed?: number }>
+      >(`/auction-events/${params.eventId}/start`, { groupId: params.groupId });
       return response.data.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       invalidate();
       setListError(null);
+      setListWarning(
+        data.cardsFailed
+          ? `${data.cardsFailed} card(s) de itens não puderam ser enviados ao WhatsApp. Clique em "Atualizar Lista" para tentar novamente.`
+          : null,
+      );
     },
-    onError: (err) => setListError(extractError(err, 'Falha ao iniciar a lista no grupo.')),
+    onError: (err) => {
+      setListWarning(null);
+      setListError(extractError(err, 'Falha ao iniciar a lista no grupo.'));
+    },
   });
 
   const closeListItem = useMutation({
@@ -1067,6 +1075,7 @@ export function AuctionsPage() {
                                 setSelectedEventId(event.id);
                                 setListGroupId(event.groupId ?? '');
                                 setListError(null);
+                                setListWarning(null);
                               }
                             }}
                           >
@@ -1288,6 +1297,11 @@ export function AuctionsPage() {
               {listError && (
                 <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {listError}
+                </p>
+              )}
+              {listWarning && (
+                <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                  {listWarning}
                 </p>
               )}
             </div>

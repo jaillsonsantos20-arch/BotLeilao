@@ -567,7 +567,12 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     tenantId: string,
     eventId: string,
     internalGroupId: string,
-  ): Promise<{ created: number; itemCount: number }> {
+  ): Promise<{
+    created: number;
+    itemCount: number;
+    cardsSent: number;
+    cardsFailed: number;
+  }> {
     let list = this.findListByEvent(eventId, tenantId);
 
     if (!list) {
@@ -619,10 +624,22 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     const createdIds = await this.syncNewItems(list);
     // Publica os cards pendentes: recém-criados + os que falharam em envios
     // anteriores (reenvio). Cards já confirmados não são reenviados.
-    await this.sendItemCards(list);
+    const cards = await this.sendItemCards(list);
     const text = await this.listToText(list);
-    await this.emit(list.tenantId, list.groupId, text);
-    return { created: createdIds.length, itemCount: (await this.listAuctionSnapshot(list)).length };
+    const delivered = await this.emit(list.tenantId, list.groupId, text);
+    if (!delivered) {
+      // Sem cliente conectado (ou falha em todos os envios): avisar o painel
+      // em vez de devolver "sucesso" silencioso.
+      throw new Error(
+        'A lista não pôde ser enviada ao WhatsApp. Verifique se o WhatsApp está conectado no painel e tente novamente.',
+      );
+    }
+    return {
+      created: createdIds.length,
+      itemCount: (await this.listAuctionSnapshot(list)).length,
+      cardsSent: cards.sent,
+      cardsFailed: cards.failed,
+    };
   }
 
   /**
@@ -1539,7 +1556,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   private async sendItemCards(
     list: ActiveListMemory,
     auctionIds?: string[],
-  ): Promise<void> {
+  ): Promise<{ pending: number; sent: number; failed: number }> {
     const snapshot = await this.listAuctionSnapshot(list);
     const wanted = auctionIds ? new Set(auctionIds) : null;
     const pending = snapshot.filter((row) => {
@@ -1548,6 +1565,8 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       // Item já encerrado sem ter sido publicado: não anuncia atrasado.
       return String(row.status) === AuctionStatus.OPEN;
     });
+
+    const stats = { pending: pending.length, sent: 0, failed: 0 };
 
     for (let index = 0; index < pending.length; index += 1) {
       const row = pending[index];
@@ -1568,11 +1587,13 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         if (!sent) {
           // Erro registrado; o card continua pendente de reenvio e o vínculo
           // de Message ID NÃO é criado (emit só registra em envio confirmado).
+          stats.failed += 1;
           this.logger.warn(
             `Card do item "${row.name}" não pôde ser enviado ao grupo ${list.groupId}; permanece pendente de reenvio.`,
           );
           return;
         }
+        stats.sent += 1;
         await this.prisma.auction.update({
           where: { id: row.auctionId },
           data: { cardSentAt: new Date() },
@@ -1582,6 +1603,19 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         await new Promise((resolve) => setTimeout(resolve, WHATSAPP_ITEM_CARD_DELAY_MS));
       }
     }
+
+    // Diagnóstico: sem estes números uma falha de cards passa despercebida
+    // (a lista textual segue sendo enviada e o painel mostra sucesso).
+    if (stats.pending > 0) {
+      this.logger.log(
+        `Cards do evento "${list.eventName}" (grupo ${list.groupId}): ${stats.sent} enviados, ${stats.failed} falharam de ${stats.pending} pendente(s) - ${snapshot.length} leilão(ões) no total.`,
+      );
+    } else {
+      this.logger.log(
+        `Nenhum card pendente no evento "${list.eventName}" (grupo ${list.groupId}) de ${snapshot.length} leilão(ões).`,
+      );
+    }
+    return stats;
   }
 
   /**

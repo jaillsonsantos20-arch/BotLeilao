@@ -53,6 +53,21 @@ export class AuctionsService {
 
     const now = new Date();
 
+    // Modo lista (com auctionEventId) permite vários leilões abertos no mesmo
+    // grupo (um por item). No fluxo individual (sem evento) vale a regra antiga
+    // de "um leilão aberto por grupo": o índice único foi removido junto com o
+    // modo lista, então a checagem precisa ser explícita (senão o bot deixaria
+    // um segundo leilão sem ticker/tratamento no grupo).
+    if (!input.auctionEventId) {
+      const open = await this.prisma.auction.findFirst({
+        where: { tenantId, groupId: group.id, status: AuctionStatus.OPEN },
+        select: { id: true },
+      });
+      if (open) {
+        throw new ConflictException('Já existe um leilão aberto neste grupo.');
+      }
+    }
+
     try {
       const auction = await this.prisma.auction.create({
         data: {
