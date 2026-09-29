@@ -1577,11 +1577,19 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         });
         if (!fresh || fresh.cardSentAt) return; // outro fluxo já publicou
 
+        const mediaPath = imageUrlToLocalPath(row.imageUrl);
+        if (row.imageUrl && !mediaPath) {
+          // URL externa/inválida: o card sai só com o texto e ninguém percebe.
+          this.logger.warn(
+            `Item "${row.name}" tem imagem "${row.imageUrl}" que não está em /api/uploads; card será enviado apenas com o texto.`,
+          );
+        }
+
         const sent = await this.emit(
           list.tenantId,
           list.groupId,
           this.itemCardText(row),
-          imageUrlToLocalPath(row.imageUrl),
+          mediaPath,
           { auctionId: row.auctionId, itemId: row.itemId, itemName: row.name },
         );
         if (!sent) {
