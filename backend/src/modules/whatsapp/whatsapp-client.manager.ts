@@ -252,6 +252,12 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
     return { status: SessionStatus.CONNECTING };
   }
 
+  /**
+   * Encerra a sessão do tenant, apaga as credenciais locais (LocalAuth) e
+   * inicia um pareamento novo. Sem apagar a pasta o whatsapp-web.js restaura
+   * a sessão antiga em silêncio e nenhum QR Code é gerado - o painel ficava
+   * sem código tanto na troca de número quanto no primeiro acesso.
+   */
   async disconnect(tenantId: string): Promise<void> {
     const client = this.clients.get(tenantId);
     if (client) {
@@ -260,10 +266,37 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
     }
     this.clientAttemptAt.delete(tenantId);
     this.latestQr.delete(tenantId);
+    this.clearStoredSession(tenantId);
     await this.prisma.whatsAppSession.updateMany({
       where: { tenantId },
       data: { status: SessionStatus.DISCONNECTED, lastError: null },
     });
+    // Pareamento imediato: o painel já mostra o QR novo, sem exigir um
+    // segundo clique em "Conectar WhatsApp".
+    await this.connect(tenantId);
+  }
+
+  /**
+   * Remove a sessão persistida pelo LocalAuth
+   * (`.wwebjs_auth/session-tenant-<tenantId>`), forçando a emissão de QR.
+   */
+  private clearStoredSession(tenantId: string): void {
+    const sessionDir = join(
+      process.cwd(),
+      '.wwebjs_auth',
+      `session-tenant-${tenantId}`,
+    );
+    if (!existsSync(sessionDir)) return;
+    try {
+      rmSync(sessionDir, { recursive: true, force: true });
+      this.logger.log(
+        `Credenciais locais do tenant ${tenantId} removidas; um novo QR Code será gerado.`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Não foi possível remover a sessão local do tenant ${tenantId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   getClient(tenantId: string): Client | undefined {

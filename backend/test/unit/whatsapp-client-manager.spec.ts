@@ -1,4 +1,6 @@
 import { SessionStatus } from '@prisma/client';
+import { existsSync, mkdirSync, rmSync, rmdirSync } from 'fs';
+import { join } from 'path';
 import { WhatsAppClientManager } from '../../src/modules/whatsapp/whatsapp-client.manager';
 
 /**
@@ -171,4 +173,41 @@ describe('WhatsAppClientManager', () => {
     },
     15000,
   );
+
+  it('disconnect apaga a sessão local e inicia um pareamento novo (QR)', async () => {
+    const { manager, prisma } = buildManager();
+    const tenant = 'tenant-test-wipe';
+    const authRoot = join(process.cwd(), '.wwebjs_auth');
+    const sessionDir = join(authRoot, `session-tenant-${tenant}`);
+    mkdirSync(sessionDir, { recursive: true });
+
+    try {
+      const client = fakeClient(true);
+      internals(manager).clients.set(tenant, client);
+      const connect = jest
+        .spyOn(manager, 'connect')
+        .mockResolvedValue({ status: SessionStatus.CONNECTING });
+
+      await manager.disconnect(tenant);
+
+      // Sem esta remoção o whatsapp-web.js restaura a sessão antiga e o
+      // painel nunca exibe um QR Code novo.
+      expect(existsSync(sessionDir)).toBe(false);
+      expect(client.destroy).toHaveBeenCalled();
+      expect(internals(manager).clients.has(tenant)).toBe(false);
+      expect(prisma.whatsAppSession.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: SessionStatus.DISCONNECTED }),
+        }),
+      );
+      expect(connect).toHaveBeenCalledWith(tenant);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+      try {
+        rmdirSync(authRoot);
+      } catch {
+        // diretório não vazio (sessão real de outro tenant) - preservar
+      }
+    }
+  });
 });
