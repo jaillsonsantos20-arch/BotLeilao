@@ -2,13 +2,14 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { ensureStartupSeed } from '../src/seed/startup.seed';
 
 /**
- * Teste de integração do fluxo completo:
- * register -> login -> refresh -> grupos -> leilão -> lances -> regras.
- * Requer o PostgreSQL do docker-compose em execução.
+ * Teste de integra��o do fluxo completo:
+ * register -> login -> refresh -> grupos -> leil�o -> lances -> regras.
+ * Requer o PostgreSQL do docker-compose em execu��o.
  */
-describe('BotLeilão API (e2e)', () => {
+describe('BotLeil�o API (e2e)', () => {
   let app: INestApplication;
   const unique = Date.now();
   const email = `e2e-${unique}@test.com.br`;
@@ -17,6 +18,11 @@ describe('BotLeilão API (e2e)', () => {
   let refreshToken: string;
 
   beforeAll(async () => {
+    // O boot real (main.ts) executa o seed; o módulo de teste não passa por
+    // lá. Sem planos ativos o registro não cria assinatura e o
+    // TenantAccessGuard responde 403 (PAYMENT_REQUIRED) nas rotas internas.
+    await ensureStartupSeed();
+
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
