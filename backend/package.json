@@ -44,7 +44,7 @@
     "qrcode-terminal": "^0.12.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "whatsapp-web.js": "github:lindionez/whatsapp-web.js#f4ea1e3cf4076e44e36dfe5f81ea57048d2f7761"
+    "whatsapp-web.js": "github:lindionez/whatsapp-web.js#88d84601f75c479cf62b658cc3080cda5731b0ec"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
