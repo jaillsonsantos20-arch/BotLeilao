@@ -318,6 +318,23 @@ describe('AuctionEngine — regra 36 (lance via "Responder")', () => {
     );
   });
 
+  it('"3. 110" respondido usa o item 3 e R$ 110 (nao R$ 3.110 no item citado)', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    const replyContext: ReplyContext = {
+      auctionId: 'auction-2',
+      itemId: 'item-2',
+      itemName: 'Capao 01',
+    };
+    await engine.handleChatInput(buildContext(), msg('3. 110'), replyContext);
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-3', amount: 110 }),
+    );
+  });
+
   it('resposta com texto além do valor ("dou 46") ainda usa o item citado', async () => {
     const { engine, placeBid } = buildEngine();
     engine['listGroups'].set('group-1', { ...list });

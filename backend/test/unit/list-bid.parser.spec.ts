@@ -48,6 +48,29 @@ describe('ListBidParser — Nº do item + valor', () => {
     expect(r.itemId).toBeNull();
     expect(r.ambiguous).toBe(false);
   });
+
+  it('interpreta "3. 110" (ponto final no numero do item)', () => {
+    const r = parser().parseMessage('3. 110');
+    expect(r.amount).toBe(110);
+    expect(r.itemNumber).toBe(3);
+    expect(r.itemId).toBe('a3');
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('interpreta "3, 110" (virgula final no numero do item)', () => {
+    const r = parser().parseMessage('3, 110');
+    expect(r.amount).toBe(110);
+    expect(r.itemNumber).toBe(3);
+    expect(r.itemId).toBe('a3');
+  });
+
+  it('nao confunde milhar com ponto ("1.100 50")', () => {
+    const r = parser().parseMessage('1.100 50');
+    expect(r.amount).toBe(1100);
+    // nao vira item 1: o sobra-resto "50" nao casa nenhum item da lista
+    expect(r.itemNumber).toBeNull();
+    expect(r.itemId).toBeNull();
+  });
 });
 
 describe('ListBidParser — nome do item + valor', () => {

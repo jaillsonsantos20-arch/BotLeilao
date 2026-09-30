@@ -392,8 +392,10 @@ export class ListBidParser {
     let claimedNumber: number | null = null;
     let remainingTokens: string[] = [...tokens];
 
-    // Formato A (prioridade máxima): "Nº VALOR" — "01 300", "1 25,50"
-    if (tokens.length >= 2 && /^\d{1,4}$/.test(tokens[0]) && parseInt(tokens[0], 10) > 0) {
+    // Formato A (prioridade máxima): "Nº VALOR" — "01 300", "1 25,50", "3. 110"
+    // O Nº pode vir com pontuação final ("3. 110" / "3, 110"): senão o "3." é
+    // lido como valor e "110" vira número de item inexistente.
+    if (tokens.length >= 2 && /^\d{1,4}[.,]?$/.test(tokens[0]) && parseInt(tokens[0], 10) > 0) {
       let amt = parseAmount(tokens[1]);
       let consumed = 1;
       if (amt === null || amt <= 0) {

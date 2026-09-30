@@ -1198,11 +1198,11 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     // --- Responder do WhatsApp: participante respondeu uma mensagem do bot
     // que mencionava um item, enviando apenas o valor do lance ("46", "R$ 46").
     //
-    // O formato explícito "Nº VALOR" ("01 300") fica de fora: o item escrito
+    // O formato explícito "Nº VALOR" ("01 300", "3. 110") fica de fora: o item escrito
     // pelo participante tem prioridade sobre o item citado — senão o "01"
     // seria engolido pelo parseAmount ("01 300" -> 1300) no item errado.
     const isValueOnly = /^[\s\d.,rR$]+$/.test(text);
-    const isItemAndValue = /^\s*\d{1,4}\s+[\d.,]/.test(text.replace(/r\$/gi, ' '));
+    const isItemAndValue = /^\s*\d{1,4}[.,]?\s+[\d.,]/.test(text.replace(/r\$/gi, ' '));
     if (replyContext && text && isValueOnly && !isItemAndValue) {
       const amount = parseAmount(text);
       if (amount !== null && amount > 0) {
