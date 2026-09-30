@@ -28,6 +28,11 @@ function buildEngine(overrides: {
       ]),
     },
     group: { findFirst: jest.fn() },
+    whatsAppReplyBinding: {
+      upsert: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
   } as never;
 
   const closeResult = {

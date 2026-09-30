@@ -105,6 +105,11 @@ function buildEngine(options: BuildOptions = {}) {
         return Promise.resolve({ ...auctionState });
       }),
     },
+    whatsAppReplyBinding: {
+      upsert: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
   };
 
   const engine = new AuctionEngine(prisma as never, {} as never, {} as never);

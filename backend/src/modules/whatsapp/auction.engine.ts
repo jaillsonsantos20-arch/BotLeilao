@@ -19,6 +19,8 @@ import {
   WHATSAPP_LIST_STATUS_INTERVAL_MS,
   WHATSAPP_MAX_DURATION_MINUTES,
   WHATSAPP_MIN_DURATION_MINUTES,
+  WHATSAPP_REPLY_BINDING_TTL_DAYS,
+  WHATSAPP_REPLY_CONTEXT_MAX,
   WHATSAPP_TICK_INTERVAL_MS,
   WHATSAPP_WARNING_FIRST_SECONDS,
   WHATSAPP_WARNING_SECOND_SECONDS,
@@ -102,18 +104,55 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     this.reactors.add(reactor);
   }
 
-  /** Registra o item de uma mensagem enviada pelo bot (para suporte a reply). */
-  private registerReplyContext(messageId: string, context: ReplyContext): void {
+  /**
+   * Vincula uma mensagem (do bot ou de participante) ao item, para suporte ao
+   * "Responder" do WhatsApp.
+   *
+   * O vínculo vale em memória (rápido) e no banco (sobrevive a restart).
+   */
+  private registerReplyContext(
+    messageId: string,
+    context: ReplyContext,
+    scope: { tenantId: string; groupId: string },
+  ): void {
     this.replyContexts.set(messageId, context);
-    // Limita o mapa: descarta as mensagens mais antigas.
-    while (this.replyContexts.size > 500) {
+    // Limita o mapa: descarta as mensagens mais antigas. O teto cobre cards
+    // + avisos + lances aceitos de um evento grande sem descartar cards ainda
+    // abertos (cada lance aceito também vira um ponto de resposta).
+    while (this.replyContexts.size > WHATSAPP_REPLY_CONTEXT_MAX) {
       const oldest = this.replyContexts.keys().next().value;
       if (oldest === undefined) break;
       this.replyContexts.delete(oldest);
     }
+    this.persistReplyContext(messageId, context, scope);
   }
 
-  /** Recupera o contexto de item de uma mensagem do bot (usado no "Responder"). */
+  /**
+   * Grava o vínculo no banco (fire-and-forget): o envio do card/lance não pode
+   * esperar por isso e uma falha aqui degrada apenas para o parser genérico.
+   */
+  private persistReplyContext(
+    messageId: string,
+    context: ReplyContext,
+    scope: { tenantId: string; groupId: string },
+  ): void {
+    const data = {
+      tenantId: scope.tenantId,
+      groupId: scope.groupId,
+      auctionId: context.auctionId,
+      itemId: context.itemId,
+      itemName: context.itemName,
+    };
+    void this.prisma.whatsAppReplyBinding
+      .upsert({ where: { messageId }, create: { messageId, ...data }, update: data })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `Falha ao persistir vínculo da mensagem ${messageId}: ${(error as Error).message}`,
+        );
+      });
+  }
+
+  /** Recupera o item de uma mensagem citada (usado no "Responder"). */
   getReplyContext(messageId: string): ReplyContext | undefined {
     return this.replyContexts.get(messageId);
   }
@@ -121,6 +160,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     await this.loadActiveAuctions();
     await this.loadActiveLists();
+    await this.loadReplyContexts();
     this.tickTimer = setInterval(() => this.tick(), WHATSAPP_TICK_INTERVAL_MS);
     this.sweepTimer = setInterval(
       () => void this.sweepExpiredFromDb(),
@@ -228,6 +268,37 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         warnedThreeByAuction: new Map(),
         warnedEventEndsAt: null,
       });
+    }
+  }
+
+  /**
+   * Restaura os vínculos "mensagem -> item" do banco (sobrevive a restart).
+   *
+   * Sem isto, todos os cards já enviados antes do reinício perdem o suporte
+   * ao "Responder" e o lance cai no interpretador genérico.
+   */
+  private async loadReplyContexts(): Promise<void> {
+    try {
+      const rows = await this.prisma.whatsAppReplyBinding.findMany({
+        where: { auction: { status: AuctionStatus.OPEN } },
+        orderBy: { createdAt: 'desc' },
+        take: WHATSAPP_REPLY_CONTEXT_MAX,
+        select: { messageId: true, auctionId: true, itemId: true, itemName: true },
+      });
+      // Mais antigo primeiro: se exceder o teto, o descarte atinge os antigos.
+      for (const row of rows.reverse()) {
+        this.replyContexts.set(row.messageId, {
+          auctionId: row.auctionId,
+          itemId: row.itemId,
+          itemName: row.itemName,
+        });
+      }
+      if (rows.length > 0) {
+        this.logger.log(`${rows.length} vínculo(s) de "Responder" restaurado(s) do banco.`);
+      }
+    } catch (error) {
+      // Restauração é opcional: o bot segue funcionando com o interpretador.
+      this.logger.warn(`Falha ao restaurar vínculos de "Responder": ${(error as Error).message}`);
     }
   }
 
@@ -559,21 +630,43 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /**
    * Abre (ou atualiza) a lista de um evento em um grupo a partir do painel.
    *
+   * Regras de publicação:
+   *  - **Primeira abertura** ("Iniciar lista"): envia SOMENTE os cards dos
+   *    itens que possuem foto. Itens sem foto entram depois, pela lista
+   *    textual do "Atualizar Lista".
+   *  - **Atualização** ("Atualizar Lista"): envia apenas a lista textual
+   *    completa (todos os itens, com lances atuais). Único caso em que cards
+   *    ainda pendentes são reenviados são falhas anteriores de cards com foto.
+   *
    * Se a lista já está em andamento, apenas os itens cadastrados após a
-   * abertura ganham um leilão (mantendo os lances já efetuados) e a lista
-   * atualizada é reenviada no WhatsApp.
+   * abertura ganham um leilão (mantendo os lances já efetuados).
+   *
+   * `options.announce` (abertura automática por agendamento) publica também a
+   * lista textual na primeira abertura, já que não há operador no painel.
    */
   async openListFromPanel(
     tenantId: string,
     eventId: string,
     internalGroupId: string,
+    options?: { announce?: boolean },
   ): Promise<{
     created: number;
     itemCount: number;
     cardsSent: number;
     cardsFailed: number;
+    listSent: boolean;
   }> {
     let list = this.findListByEvent(eventId, tenantId);
+
+    // Primeira publicação: sem lista em memória e sem leilões no banco.
+    // (Com leilões no banco é retomada - ex.: restart do backend - e o fluxo
+    // é o de atualização, que envia a lista textual.)
+    const firstPublish =
+      !list &&
+      !(await this.prisma.auction.findFirst({
+        where: { tenantId, auctionEventId: eventId },
+        select: { id: true },
+      }));
 
     if (!list) {
       const event = await this.prisma.auctionEvent.findFirst({
@@ -622,23 +715,63 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     }
 
     const createdIds = await this.syncNewItems(list);
-    // Publica os cards pendentes: recém-criados + os que falharam em envios
-    // anteriores (reenvio). Cards já confirmados não são reenviados.
-    const cards = await this.sendItemCards(list);
-    const text = await this.listToText(list);
-    const delivered = await this.emit(list.tenantId, list.groupId, text);
-    if (!delivered) {
-      // Sem cliente conectado (ou falha em todos os envios): avisar o painel
-      // em vez de devolver "sucesso" silencioso.
+    // Cards pendentes restritos aos itens COM FOTO (falhas anteriores entram
+    // aqui também); itens sem foto nunca ganham card.
+    const cards = await this.sendItemCards(list, undefined, { photoOnly: true });
+
+    if (!firstPublish && !options?.announce) {
+      // "Atualizar Lista": só a lista textual completa.
+      const text = await this.listToText(list);
+      const delivered = await this.emit(list.tenantId, list.groupId, text);
+      if (!delivered) {
+        // Sem cliente conectado (ou falha em todos os envios): avisar o painel
+        // em vez de devolver "sucesso" silencioso.
+        throw new Error(
+          'A lista não pôde ser enviada ao WhatsApp. Verifique se o WhatsApp está conectado no painel e tente novamente.',
+        );
+      }
+      return {
+        created: createdIds.length,
+        itemCount: (await this.listAuctionSnapshot(list)).length,
+        cardsSent: cards.sent,
+        cardsFailed: cards.failed,
+        listSent: true,
+      };
+    }
+
+    // Primeira abertura: somente cards com foto (exceto abertura automática,
+    // que também anuncia a lista textual porque não há operador no painel).
+    if (options?.announce) {
+      const text = await this.listToText(list);
+      const delivered = await this.emit(list.tenantId, list.groupId, text);
+      if (!delivered && cards.sent === 0) {
+        throw new Error(
+          'A lista não pôde ser enviada ao WhatsApp. Verifique se o WhatsApp está conectado no painel e tente novamente.',
+        );
+      }
+      return {
+        created: createdIds.length,
+        itemCount: (await this.listAuctionSnapshot(list)).length,
+        cardsSent: cards.sent,
+        cardsFailed: cards.failed,
+        listSent: delivered,
+      };
+    }
+
+    if (cards.pending > 0 && cards.sent === 0 && cards.failed > 0) {
+      // Nada chegou ao grupo: quase sempre WhatsApp desconectado. O painel
+      // precisa do erro em vez de "sucesso" silencioso.
       throw new Error(
-        'A lista não pôde ser enviada ao WhatsApp. Verifique se o WhatsApp está conectado no painel e tente novamente.',
+        'Nenhum card pôde ser enviado ao WhatsApp. Verifique se o WhatsApp está conectado no painel e tente novamente.',
       );
     }
+
     return {
       created: createdIds.length,
       itemCount: (await this.listAuctionSnapshot(list)).length,
       cardsSent: cards.sent,
       cardsFailed: cards.failed,
+      listSent: false,
     };
   }
 
@@ -1064,37 +1197,50 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
     // --- Responder do WhatsApp: participante respondeu uma mensagem do bot
     // que mencionava um item, enviando apenas o valor do lance ("46", "R$ 46").
+    //
+    // O formato explícito "Nº VALOR" ("01 300") fica de fora: o item escrito
+    // pelo participante tem prioridade sobre o item citado — senão o "01"
+    // seria engolido pelo parseAmount ("01 300" -> 1300) no item errado.
     const isValueOnly = /^[\s\d.,rR$]+$/.test(text);
-    if (replyContext && text && isValueOnly) {
+    const isItemAndValue = /^\s*\d{1,4}\s+[\d.,]/.test(text.replace(/r\$/gi, ' '));
+    if (replyContext && text && isValueOnly && !isItemAndValue) {
       const amount = parseAmount(text);
       if (amount !== null && amount > 0) {
         const list = this.listGroups.get(context.groupId);
-        if (list) {
-          const entry = (await this.listAuctionSnapshot(list)).find(
-            (e) => e.auctionId === replyContext.auctionId,
+        if (!list) {
+          // Sem lista em memória o lance seria descartado em silêncio.
+          await this.reply(
+            context,
+            'ℹ️ A lista de leilão não está mais ativa neste grupo; o lance não foi registrado.',
           );
-          if (entry && entry.status === AuctionStatus.OPEN) {
-            try {
-              await this.placeBidEntry(list, context, message, entry, amount);
-              return;
-            } catch (error) {
-              await this.reply(context, this.friendlyError(error));
-              return;
-            }
-          }
-          if (entry) {
-            await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
+          return;
+        }
+        const entry = (await this.listAuctionSnapshot(list)).find(
+          (e) => e.auctionId === replyContext.auctionId,
+        );
+        if (entry && entry.status === AuctionStatus.OPEN) {
+          // A mensagem citada já identificou o item: consome o "qual item?".
+          pendingBidContextStore.deleteContext(list.tenantId, list.groupId, context.senderId);
+          try {
+            await this.placeBidEntry(list, context, message, entry, amount);
+            return;
+          } catch (error) {
+            await this.reply(context, this.friendlyError(error));
             return;
           }
-          // Item não está mais na lista → cai no fluxo normal.
         }
+        if (entry) {
+          await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
+          return;
+        }
+        // Item não está mais na lista → cai no fluxo normal.
       }
     }
 
     // Fluxo normal (sem reply context ou não aplicável)
     const list = this.listGroups.get(context.groupId);
     if (list) {
-      await this.handleListBid(context, list, message, text);
+      await this.handleListBid(context, list, message, text, replyContext);
       return;
     }
 
@@ -1120,12 +1266,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
    *    - item ambíguo → pergunta qual é (contexto pendente, expira em 2 min);
    *    - valor sem item → pergunta qual é;
    *    - mensagem que não parece lance → ignora silenciosamente.
+   * 3. Se o participante usou o "Responder" e o texto só tem o valor
+   *    ("46 reais", "dou 46"), o item vem da mensagem citada.
    */
   private async handleListBid(
     context: WhatsAppGroupContext,
     list: ActiveListMemory,
     message: Message,
     text: string,
+    replyContext?: ReplyContext,
   ): Promise<void> {
     const snapshot = await this.listAuctionSnapshot(list);
 
@@ -1163,7 +1312,39 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     const looksLikeBid = /^\s*(?:r\$|[\d.,])/i.test(text);
     const senderKey = { tenantId: list.tenantId, groupId: list.groupId, senderId: context.senderId };
 
-    // a) Valor + item com confiança alta → registra o lance.
+    // a) Responder do WhatsApp: valor no texto, item só na mensagem citada
+    // ("46 reais", "dou 46"). Só quando o texto não citou outro item (nem nº,
+    // nem nome/candidatos) — o que está escrito sempre vence o citado.
+    if (
+      replyContext &&
+      parsed.amount !== null &&
+      parsed.amount > 0 &&
+      parsed.itemId === null &&
+      parsed.itemNumber === null &&
+      parsed.candidates.length === 0
+    ) {
+      const entry = snapshot.find((e) => e.auctionId === replyContext.auctionId);
+      if (entry && entry.status === AuctionStatus.OPEN) {
+        pendingBidContextStore.deleteContext(
+          senderKey.tenantId,
+          senderKey.groupId,
+          senderKey.senderId,
+        );
+        try {
+          await this.placeBidEntry(list, context, message, entry, parsed.amount);
+        } catch (error) {
+          await this.reply(context, this.friendlyError(error));
+        }
+        return;
+      }
+      if (entry) {
+        await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
+        return;
+      }
+      // Item saiu da lista → segue o fluxo normal (vai perguntar qual item).
+    }
+
+    // b) Valor + item com confiança alta → registra o lance.
     if (
       parsed.amount !== null &&
       parsed.amount > 0 &&
@@ -1193,7 +1374,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // b) Nº de item que não existe ("99 300")
+    // c) Nº de item que não existe ("99 300")
     if (parsed.amount !== null && parsed.amount > 0 && parsed.itemNumber !== null && !parsed.itemId) {
       await this.reply(
         context,
@@ -1202,7 +1383,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // c) Valor ok mas item ambíguo → pergunta qual é (nunca adivinha).
+    // d) Valor ok mas item ambíguo → pergunta qual é (nunca adivinha).
     if (parsed.amount !== null && parsed.amount > 0 && parsed.ambiguous && parsed.candidates.length > 0) {
       pendingBidContextStore.createContext(
         senderKey.tenantId,
@@ -1222,7 +1403,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // d) Valor identificado sem item e a mensagem parece lance → qual item?
+    // e) Valor identificado sem item e a mensagem parece lance → qual item?
     if (parsed.amount !== null && parsed.amount > 0 && looksLikeBid) {
       const open = snapshot.filter((e) => e.status === AuctionStatus.OPEN);
       if (open.length > 0 && open.length <= 10) {
@@ -1250,7 +1431,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // e) Começa com número mas está malformada → orienta.
+    // f) Começa com número mas está malformada → orienta.
     if (/^\s*\d/.test(text)) {
       await this.reply(
         context,
@@ -1259,7 +1440,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // f) Texto que não se parece com lance (conversa normal) → ignora.
+    // g) Texto que não se parece com lance (conversa normal) → ignora.
   }
 
   /** Registra um lance em um item da lista e confirma com reação ✅. */
@@ -1280,6 +1461,21 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     // Confirma sem poluir o chat: apenas reage à mensagem do participante.
     // Valor e vencedor aparecem no fechamento ou via !status.
     await this.react(message, '✅');
+
+    // Vincula a MENSAGEM do participante ao item: quem responder esse lance
+    // ("Responder"/swipe) com apenas o valor herda o mesmo item.
+    const participantMessageId = message.id?._serialized;
+    if (participantMessageId) {
+      this.registerReplyContext(
+        participantMessageId,
+        {
+          auctionId: entry.auctionId,
+          itemId: entry.itemId,
+          itemName: entry.name,
+        },
+        { tenantId: list.tenantId, groupId: list.groupId },
+      );
+    }
 
     list.lastStatusAt = Date.now();
     this.listGroups.set(context.groupId, list);
@@ -1552,10 +1748,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
    *
    * `auctionIds` restringe o envio a um subconjunto (ex.: um único item novo);
    * sem parâmetro, envia todos os pendentes do evento.
+   *
+   * `options.photoOnly` limita aos itens com foto: é o comportamento do
+   * "Iniciar lista" e do reenvio no "Atualizar Lista" (itens sem foto só
+   * aparecem na lista textual).
    */
   private async sendItemCards(
     list: ActiveListMemory,
     auctionIds?: string[],
+    options?: { photoOnly?: boolean },
   ): Promise<{ pending: number; sent: number; failed: number }> {
     const snapshot = await this.listAuctionSnapshot(list);
     const wanted = auctionIds ? new Set(auctionIds) : null;
@@ -1563,7 +1764,9 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       if (wanted && !wanted.has(row.auctionId)) return false;
       if (row.cardSentAt) return false; // já publicado
       // Item já encerrado sem ter sido publicado: não anuncia atrasado.
-      return String(row.status) === AuctionStatus.OPEN;
+      if (String(row.status) !== AuctionStatus.OPEN) return false;
+      if (options?.photoOnly && !row.imageUrl) return false;
+      return true;
     });
 
     const stats = { pending: pending.length, sent: 0, failed: 0 };
@@ -1813,7 +2016,12 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
             });
             if (!wasOpened) {
               try {
-                await this.openListFromPanel(event.tenantId, event.id, event.group?.id ?? '');
+                // Abertura automática: além dos cards com foto, anuncia a
+                // lista textual (não há operador no painel para clicar em
+                // "Atualizar Lista").
+                await this.openListFromPanel(event.tenantId, event.id, event.group?.id ?? '', {
+                  announce: true,
+                });
                 memory.autoOpenedStartAt = event.scheduledStartAt;
                 this.scheduledEvents.set(event.id, memory);
                 this.logger.log(
@@ -1945,6 +2153,26 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         this.active.delete(auction.groupId);
       }
     }
+    await this.sweepReplyBindings();
+  }
+
+  /** Remove vínculos "mensagem -> item" antigos (não há mais lance a receber). */
+  private async sweepReplyBindings(): Promise<void> {
+    try {
+      const cutoff = new Date(
+        Date.now() - WHATSAPP_REPLY_BINDING_TTL_DAYS * 24 * 60 * 60 * 1000,
+      );
+      const { count } = await this.prisma.whatsAppReplyBinding.deleteMany({
+        where: { createdAt: { lt: cutoff } },
+      });
+      if (count > 0) {
+        this.logger.log(`${count} vínculo(s) de "Responder" antigo(s) removido(s).`);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao limpar vínculos de "Responder": ${(error as Error).message}`,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1996,7 +2224,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       // Só registra o vínculo quando o envio foi confirmado - nunca um
       // Message ID falso quando o envio falhou.
       if (replyContext && typeof result.value === 'string' && result.value) {
-        this.registerReplyContext(result.value, replyContext);
+        this.registerReplyContext(result.value, replyContext, { tenantId, groupId });
       }
     }
     return delivered;

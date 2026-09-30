@@ -147,6 +147,11 @@ function buildEngine(options?: {
       findMany: jest.fn().mockResolvedValue(items),
       update: jest.fn().mockResolvedValue({}),
     },
+    whatsAppReplyBinding: {
+      upsert: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
   };
 
   const engine = new AuctionEngine(prisma as never, {} as never, {} as never);
@@ -165,37 +170,30 @@ function buildEngine(options?: {
   return { engine, prisma, sent };
 }
 
-describe('AuctionEngine — cards de item ao abrir a lista', () => {
-  it('envia um card por item (foto/legenda) e cria leilões com duração opcional', async () => {
+describe('AuctionEngine — publicação da lista pelo painel', () => {
+  it('iniciar lista: envia cards apenas dos itens COM foto, sem lista textual', async () => {
     const { engine, prisma, sent } = buildEngine();
 
     const result = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
 
     expect(result.created).toBe(2);
     expect(result.itemCount).toBe(2);
-    expect(result.cardsSent).toBe(2);
+    expect(result.cardsSent).toBe(1);
     expect(result.cardsFailed).toBe(0);
+    expect(result.listSent).toBe(false);
 
-    // 2 cards + 1 lista textual (status) = 3 mensagens
-    expect(sent).toHaveLength(3);
+    // Só o card do item com foto — nenhum texto de lista
+    expect(sent).toHaveLength(1);
 
-    const [card1, card2, listText] = sent;
-    // Card 1: com foto (mediaPath resolvido da URL de upload)
-    expect(card1.text).toContain('*01* • Bolo de goma');
-    expect(card1.text).toContain('Com cobertura de chocolate');
-    expect(card1.text).toContain('Valor inicial');
-    expect(card1.text).toContain('Tempo');
-    expect(card1.mediaPath).toContain('bolo.jpg');
+    const [card] = sent;
+    expect(card.text).toContain('*01* • Bolo de goma');
+    expect(card.text).toContain('Com cobertura de chocolate');
+    expect(card.text).toContain('Valor inicial');
+    expect(card.text).toContain('Tempo');
+    expect(card.mediaPath).toContain('bolo.jpg');
 
-    // Card 2: sem foto e SEM linha de tempo (duração não configurada)
-    expect(card2.text).toContain('*02* • Refrigerante');
-    expect(card2.text).toContain('Valor inicial');
-    expect(card2.text).not.toContain('⏱️ Tempo');
-    expect(card2.mediaPath).toBeUndefined();
-
-    // O status continua sendo lista textual (sem fotos)
-    expect(listText.mediaPath).toBeUndefined();
-    expect(listText.text).toContain('EM ANDAMENTO');
+    // Item sem foto fica de fora nesta etapa
+    expect(sent.some((message) => message.text.includes('Refrigerante'))).toBe(false);
 
     // Card 1 com prazo; card 2 sem duração artificial (endsAt null)
     const createdData = prisma.auction.create.mock.calls.map(
@@ -212,27 +210,31 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
       itemId: 'item-1',
       itemName: 'Bolo de goma',
     });
-    expect(engine.getReplyContext('msg-2')).toEqual({
-      auctionId: 'auc-2',
-      itemId: 'item-2',
-      itemName: 'Refrigerante',
-    });
-    // A lista textual não fica vinculada a item algum
-    expect(engine.getReplyContext('msg-3')).toBeUndefined();
+    // Sem card não há vínculo (o item sem foto entra pela lista textual)
+    expect(engine.getReplyContext('msg-2')).toBeUndefined();
   });
 
-  it('ao atualizar a lista, envia cards apenas para itens novos', async () => {
+  it('atualizar lista: envia só a lista textual completa, sem reenviar cards', async () => {
     const { engine, sent } = buildEngine({ allAuctioned: true });
 
+    // Primeira chamada: cards já publicados, nada novo a enviar
+    const opening = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
+    expect(opening.listSent).toBe(false);
+    expect(opening.cardsSent).toBe(0);
+    expect(sent).toHaveLength(0);
+
+    // Segunda chamada = "Atualizar Lista"
     const result = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
 
     expect(result.created).toBe(0);
     expect(result.itemCount).toBe(2);
     expect(result.cardsSent).toBe(0);
     expect(result.cardsFailed).toBe(0);
-    // Só a lista textual — nenhum card reenviado
+    expect(result.listSent).toBe(true);
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toContain('EM ANDAMENTO');
+    // O item sem foto aparece na lista textual
+    expect(sent[0].text).toContain('Refrigerante');
     expect(sent[0].mediaPath).toBeUndefined();
   });
 
@@ -245,23 +247,53 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
 
     await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
 
+    expect(sent).toHaveLength(1);
     expect(sent[0].text).toContain('*07* • Item Sete');
-    // number null => posição (índice 1 + 1 = 2)
-    expect(sent[1].text).toContain('*02* • Item Sem Nº');
+
+    // Na lista textual o item sem número usa a posição (índice 1 + 1 = 2)
+    sent.length = 0;
+    await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain('*02* • Item Sem Nº');
   });
 
-  it('reporta cards com falha sem impedir o envio da lista textual', async () => {
-    const { engine, sent } = buildEngine({ mediaFails: true });
+  it('sem itens com foto, iniciar lista não envia nada e não falha', async () => {
+    const { engine, sent } = buildEngine({ items: [{ ...ITEMS[1], id: 'item-sf' }] });
 
     const result = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
 
-    // Card 1 tem foto (falha), card 2 é só texto (ok) => lista segue sai.
+    expect(result.listSent).toBe(false);
+    expect(result.cardsSent).toBe(0);
+    expect(result.cardsFailed).toBe(0);
+    expect(sent).toHaveLength(0);
+
+    // "Atualizar Lista" publica a lista textual completa
+    const update = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal');
+    expect(update.listSent).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain('Refrigerante');
+  });
+
+  it('abertura automática (announce) envia cards de foto e a lista textual', async () => {
+    const { engine, sent } = buildEngine();
+
+    const result = await engine.openListFromPanel('tenant-1', 'event-1', 'group-internal', {
+      announce: true,
+    });
+
     expect(result.cardsSent).toBe(1);
-    expect(result.cardsFailed).toBe(1);
-    expect(result.itemCount).toBe(2);
+    expect(result.listSent).toBe(true);
     expect(sent).toHaveLength(2);
-    expect(sent[0].text).toContain('*02* • Refrigerante');
+    expect(sent[0].mediaPath).toContain('bolo.jpg');
     expect(sent[1].text).toContain('EM ANDAMENTO');
+  });
+
+  it('lança erro quando todos os cards de foto falham ao iniciar', async () => {
+    const { engine } = buildEngine({ mediaFails: true });
+
+    await expect(
+      engine.openListFromPanel('tenant-1', 'event-1', 'group-internal'),
+    ).rejects.toThrow('Nenhum card pôde ser enviado ao WhatsApp');
   });
 
   it('lança erro quando nada chega ao grupo (WhatsApp sem cliente conectado)', async () => {
@@ -272,6 +304,6 @@ describe('AuctionEngine — cards de item ao abrir a lista', () => {
 
     await expect(
       offline.openListFromPanel('tenant-1', 'event-1', 'group-internal'),
-    ).rejects.toThrow('não pôde ser enviada ao WhatsApp');
+    ).rejects.toThrow('Nenhum card pôde ser enviado ao WhatsApp');
   });
 });

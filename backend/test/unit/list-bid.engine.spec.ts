@@ -37,13 +37,18 @@ function buildEngine() {
   const prisma = {
     auction: { findMany: jest.fn().mockResolvedValue(rows) },
     group: { findFirst: jest.fn() },
-  } as never;
+    whatsAppReplyBinding: {
+      upsert: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+  };
 
   const placeBid = jest.fn().mockResolvedValue({ bid: {}, auction: {} });
   const auctionsService = { placeBid } as never;
 
-  const engine = new AuctionEngine(prisma, auctionsService, {} as never);
-  return { engine, placeBid };
+  const engine = new AuctionEngine(prisma as never, auctionsService, {} as never);
+  return { engine, placeBid, prisma };
 }
 
 function buildContext(): WhatsAppGroupContext {
@@ -251,5 +256,165 @@ describe('AuctionEngine — regra 36 (lance via "Responder")', () => {
 
     expect(engine.getReplyContext('message-id-123')).toEqual(context);
     expect(engine.getReplyContext('outra-mensagem')).toBeUndefined();
+  });
+
+  it('vincula a mensagem do participante ao item quando o lance é aceito', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    const bidMessage = {
+      body: 'bolo 400',
+      id: { _serialized: 'msg-lance-bolo' },
+    } as unknown as Message;
+    await engine.handleChatInput(buildContext(), bidMessage);
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 400 }),
+    );
+    expect(engine.getReplyContext('msg-lance-bolo')).toEqual({
+      auctionId: 'auction-1',
+      itemId: 'item-1',
+      itemName: 'Bolo de goma',
+    });
+  });
+
+  it('registra lance de quem responde ("Responder") a um lance anterior de outro participante', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    // Participante A dá lance; o bot vincula a mensagem dele ao item.
+    await engine.handleChatInput(buildContext(), {
+      body: 'bolo 400',
+      id: { _serialized: 'msg-lance-bolo' },
+    } as unknown as Message);
+
+    // Participante B responde essa mensagem apenas com o valor.
+    const contextB = { ...buildContext(), senderId: '5511888888888@c.us', senderName: 'Maria' };
+    const quotedContext = engine.getReplyContext('msg-lance-bolo');
+    expect(quotedContext).toBeDefined();
+    await engine.handleChatInput(contextB, msg('450'), quotedContext);
+
+    expect(placeBid).toHaveBeenLastCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 450 }),
+    );
+  });
+
+  it('"Nº VALOR" respondido usa o item escrito (não o citado nem R$ 1.300)', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    const replyContext: ReplyContext = {
+      auctionId: 'auction-2',
+      itemId: 'item-2',
+      itemName: 'Capão 01',
+    };
+    await engine.handleChatInput(buildContext(), msg('01 300'), replyContext);
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 300 }),
+    );
+  });
+
+  it('resposta com texto além do valor ("dou 46") ainda usa o item citado', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    const replyContext: ReplyContext = {
+      auctionId: 'auction-4',
+      itemId: 'item-4',
+      itemName: 'Garrafa térmica 2.5lt',
+    };
+    await engine.handleChatInput(buildContext(), msg('dou 46'), replyContext);
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-4', amount: 46 }),
+    );
+  });
+
+  it('avisa quando a lista não está mais ativa em vez de descartar o lance', async () => {
+    const { engine, placeBid } = buildEngine();
+    const messages = collectMessages(engine);
+
+    const replyContext: ReplyContext = {
+      auctionId: 'auction-4',
+      itemId: 'item-4',
+      itemName: 'Garrafa térmica 2.5lt',
+    };
+    await engine.handleChatInput(buildContext(), msg('46'), replyContext);
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('não está mais ativa');
+  });
+
+  it('limpa o contexto pendente "qual item?" ao registrar lance via "Responder"', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    collectMessages(engine);
+    const senderKey = { tenantId: 'tenant-1', groupId: 'group-1', senderId: '5511999999999@c.us' };
+
+    await engine.handleChatInput(buildContext(), msg('25 no capão')); // cria o contexto
+    expect(pendingBidContextStore.hasActiveContext(senderKey.tenantId, senderKey.groupId, senderKey.senderId)).toBe(true);
+
+    await engine.handleChatInput(buildContext(), msg('46'), {
+      auctionId: 'auction-4',
+      itemId: 'item-4',
+      itemName: 'Garrafa térmica 2.5lt',
+    });
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-4', amount: 46 }),
+    );
+    expect(pendingBidContextStore.hasActiveContext(senderKey.tenantId, senderKey.groupId, senderKey.senderId)).toBe(false);
+  });
+
+  it('persiste o vínculo "mensagem -> item" no banco', async () => {
+    const { engine, prisma } = buildEngine();
+    engine.subscribe(async () => 'message-id-999');
+
+    await engine['emit']('tenant-1', 'group-1', 'card', undefined, {
+      auctionId: 'auction-4',
+      itemId: 'item-4',
+      itemName: 'Garrafa térmica 2.5lt',
+    });
+
+    expect(prisma.whatsAppReplyBinding.upsert).toHaveBeenCalledWith({
+      where: { messageId: 'message-id-999' },
+      create: {
+        messageId: 'message-id-999',
+        tenantId: 'tenant-1',
+        groupId: 'group-1',
+        auctionId: 'auction-4',
+        itemId: 'item-4',
+        itemName: 'Garrafa térmica 2.5lt',
+      },
+      update: {
+        tenantId: 'tenant-1',
+        groupId: 'group-1',
+        auctionId: 'auction-4',
+        itemId: 'item-4',
+        itemName: 'Garrafa térmica 2.5lt',
+      },
+    });
+  });
+
+  it('restaura os vínculos do banco após restart', async () => {
+    const { engine, prisma } = buildEngine();
+    prisma.whatsAppReplyBinding.findMany.mockImplementation(async () => [
+      { messageId: 'msg-antigo', auctionId: 'auction-4', itemId: 'item-4', itemName: 'Garrafa térmica 2.5lt' },
+    ]);
+
+    await engine['loadReplyContexts']();
+
+    expect(engine.getReplyContext('msg-antigo')).toEqual({
+      auctionId: 'auction-4',
+      itemId: 'item-4',
+      itemName: 'Garrafa térmica 2.5lt',
+    });
   });
 });

@@ -20,3 +20,9 @@ export const WHATSAPP_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
 
 /** Tempo máximo em CONNECTING antes do watchdog recriar o cliente (o evento "ready" às vezes não dispara). */
 export const WHATSAPP_CONNECT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** Máximo de vínculos "mensagem -> item" mantidos em memória (suporte ao "Responder"). */
+export const WHATSAPP_REPLY_CONTEXT_MAX = 2000;
+
+/** Idade mínima para apagar vínculos "mensagem -> item" do banco (em dias). */
+export const WHATSAPP_REPLY_BINDING_TTL_DAYS = 30;

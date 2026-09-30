@@ -614,8 +614,14 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
               );
             }
           }
-        } catch {
-          // Mensagem citada pode ter sido apagada — segue sem contexto.
+        } catch (error) {
+          // Mensagem citada pode ter sido apagada — segue sem contexto, mas o
+          // log é obrigatório: sem ele a queda para o interpretador é invisível.
+          this.logger.warn(
+            `Não foi possível ler a mensagem citada (${message.id?._serialized ?? 'id?'}): ${
+              (error as Error).message
+            }`,
+          );
         }
       }
 

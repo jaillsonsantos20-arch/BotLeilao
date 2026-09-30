@@ -360,6 +360,7 @@ export function AuctionsPage() {
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
   const [listWarning, setListWarning] = useState<string | null>(null);
+  const [listInfo, setListInfo] = useState<string | null>(null);
 
   const [scheduleTarget, setScheduleTarget] = useState<{ item: Item; auction: Auction } | null>(null);
   const [scheduleEndAt, setScheduleEndAt] = useState('');
@@ -455,7 +456,12 @@ export function AuctionsPage() {
   const startList = useMutation({
     mutationFn: async (params: { eventId: string; groupId: string }) => {
       const response = await api.post<
-        ApiEnvelope<{ itemCount: number; cardsSent?: number; cardsFailed?: number }>
+        ApiEnvelope<{
+          itemCount: number;
+          cardsSent?: number;
+          cardsFailed?: number;
+          listSent?: boolean;
+        }>
       >(`/auction-events/${params.eventId}/start`, { groupId: params.groupId });
       return response.data.data;
     },
@@ -467,9 +473,17 @@ export function AuctionsPage() {
           ? `${data.cardsFailed} card(s) de itens não puderam ser enviados ao WhatsApp. Clique em "Atualizar Lista" para tentar novamente.`
           : null,
       );
+      setListInfo(
+        data.listSent
+          ? `Lista textual completa enviada ao grupo (${data.itemCount} itens).`
+          : data.cardsSent
+            ? `${data.cardsSent} card(s) com foto enviado(s). Itens sem foto entram com "Atualizar Lista".`
+            : 'Nenhum card com foto para enviar. Use "Atualizar Lista" para publicar a lista textual completa.',
+      );
     },
     onError: (err) => {
       setListWarning(null);
+      setListInfo(null);
       setListError(extractError(err, 'Falha ao iniciar a lista no grupo.'));
     },
   });
@@ -1076,6 +1090,7 @@ export function AuctionsPage() {
                                 setListGroupId(event.groupId ?? '');
                                 setListError(null);
                                 setListWarning(null);
+                                setListInfo(null);
                               }
                             }}
                           >
@@ -1184,8 +1199,8 @@ export function AuctionsPage() {
                   </h4>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {listStarted
-                      ? 'A lista já está em andamento no WhatsApp. Itens cadastrados agora são publicados automaticamente no grupo (foto, valor e Nº) e aceitam lances por resposta à mensagem. "Atualizar Lista" reenvia o status completo — os lances já feitos são mantidos.'
-                      : 'Abre um leilão simultâneo por item. Os participantes dão lances como 01 - 22,00. Se um status periódico foi definido, o bot reenvia a lista automaticamente.'}
+                      ? 'A lista já está em andamento no WhatsApp. Itens cadastrados agora são publicados automaticamente no grupo (foto, valor e Nº) e aceitam lances por resposta à mensagem. "Atualizar Lista" reenvia apenas a lista textual completa — os lances já feitos são mantidos.'
+                      : 'Abre um leilão simultâneo por item e envia só os cards dos itens que têm foto. Os participantes dão lances como 01 - 22,00. A lista textual completa (com todos os itens) sai ao clicar em "Atualizar Lista".'}
                   </p>
                 </div>
                 {selectedEvent.periodicStatusMinutes ? (
@@ -1302,6 +1317,11 @@ export function AuctionsPage() {
               {listWarning && (
                 <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                   {listWarning}
+                </p>
+              )}
+              {listInfo && (
+                <p className="mt-3 rounded-md bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                  {listInfo}
                 </p>
               )}
             </div>

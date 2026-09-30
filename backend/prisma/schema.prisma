@@ -117,6 +117,7 @@ model Tenant {
   audits        Audit[]
   notifications Notification[]
   sessions      WhatsAppSession[]
+  replyBindings WhatsAppReplyBinding[]
 }
 
 model User {
@@ -294,6 +295,7 @@ model Auction {
   auctionEvent  AuctionEvent? @relation(fields: [auctionEventId], references: [id], onDelete: SetNull)
   bids          Bid[]
   winnerBid     Bid?          @relation("WinnerBid", fields: [winnerBidId], references: [id])
+  replyBindings WhatsAppReplyBinding[]
 
   @@index([groupId, status]) // índice para consultas por grupo
   @@index([tenantId])
@@ -413,4 +415,26 @@ model WhatsAppSession {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Vínculo "mensagem do WhatsApp -> item" (suporte ao "Responder")
+// ---------------------------------------------------------------------------
+
+model WhatsAppReplyBinding {
+  id        String   @id @default(cuid())
+  tenantId  String
+  groupId   String   // id serializado do grupo no WhatsApp
+  messageId String   @unique // id serializado da mensagem (do bot ou do participante)
+  auctionId String
+  itemId    String?
+  itemName  String
+  createdAt DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  auction Auction @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+
+  @@index([auctionId])
+  @@index([tenantId, groupId])
+  @@index([createdAt])
 }
