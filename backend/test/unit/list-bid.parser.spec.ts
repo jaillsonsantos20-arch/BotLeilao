@@ -71,6 +71,21 @@ describe('ListBidParser — Nº do item + valor', () => {
     expect(r.itemNumber).toBeNull();
     expect(r.itemId).toBeNull();
   });
+
+  it('interpreta "3. $22,00" (Nº com ponto + valor com cifrao)', () => {
+    const r = parser().parseMessage('3. $22,00');
+    expect(r.amount).toBe(22);
+    expect(r.itemNumber).toBe(3);
+    expect(r.itemId).toBe('a3');
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('interpreta "02-35,00 R$" (hifen e R$ solto no fim)', () => {
+    const r = parser().parseMessage('02-35,00 R$');
+    expect(r.amount).toBe(35);
+    expect(r.itemNumber).toBe(2);
+    expect(r.itemId).toBe('a2');
+  });
 });
 
 describe('ListBidParser — nome do item + valor', () => {
@@ -130,6 +145,18 @@ describe('ListBidParser — ambiguidade (regra de ouro: nunca adivinhar)', () =>
     expect(r.amount).toBe(300);
     expect(r.itemId).toBeNull();
     expect(r.itemNumber).toBeNull();
+  });
+
+  it('aceita cifrao no valor ("$22,00" e "40$")', () => {
+    const a = parser().parseMessage('$22,00');
+    expect(a.amount).toBe(22);
+    expect(a.itemId).toBeNull();
+    expect(a.itemNumber).toBeNull();
+
+    const b = parser().parseMessage('40$');
+    expect(b.amount).toBe(40);
+    expect(b.itemId).toBeNull();
+    expect(b.itemNumber).toBeNull();
   });
 
   it('nome não relacionado a lance não gera candidatos', () => {

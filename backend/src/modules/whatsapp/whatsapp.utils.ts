@@ -55,13 +55,13 @@ export function formatDateTimeBR(date: Date): string {
 
 /**
  * Interpreta o valor digitado no WhatsApp como número.
- * Aceita: "150", "150,00", "R$ 150", "1.500,00".
+ * Aceita: "150", "150,00", "R$ 150", "1.500,00", "$150", "40$".
  */
 export function parseAmount(raw: string): number | null {
   let cleaned = raw
     .trim()
     .replace(/\s+/g, '')
-    .replace(/r\$/gi, '')
+    .replace(/r?\$/gi, '')
     .replace(/\u00A0/g, '')
     .trim();
 

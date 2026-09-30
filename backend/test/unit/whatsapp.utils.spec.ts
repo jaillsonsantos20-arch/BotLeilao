@@ -16,6 +16,13 @@ describe('parseAmount (interpretação de valores do WhatsApp)', () => {
     expect(parseAmount('R$150,00')).toBe(150);
   });
 
+  it('interpreta cifrao solto', () => {
+    expect(parseAmount('$150')).toBe(150);
+    expect(parseAmount('40$')).toBe(40);
+    expect(parseAmount('$22,00')).toBe(22);
+    expect(parseAmount('$')).toBeNull();
+  });
+
   it('interpreta milhares', () => {
     expect(parseAmount('1.500')).toBe(1500);
     expect(parseAmount('1.500,00')).toBe(1500);

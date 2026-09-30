@@ -162,6 +162,18 @@ describe('AuctionEngine — lances no modo lista (interpretador)', () => {
     expect(messages[0]).toContain('Qual item?');
   });
 
+  it('valor com cifrao ("$22") também pergunta qual item', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('$22'));
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[0]).toContain('Qual item?');
+    expect(messages[0]).toContain('22');
+  });
+
   it('Nº inexistente ("99 300") orienta o usuário', async () => {
     const { engine, placeBid } = buildEngine();
     engine['listGroups'].set('group-1', { ...list });

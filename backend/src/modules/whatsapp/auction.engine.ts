@@ -1309,7 +1309,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       snapshot.map((e) => ({ id: e.auctionId, name: e.name, order: e.number })),
     );
     const parsed = parser.parseMessage(text);
-    const looksLikeBid = /^\s*(?:r\$|[\d.,])/i.test(text);
+    const looksLikeBid = /^\s*(?:r\$|\$|[\d.,])/i.test(text);
     const senderKey = { tenantId: list.tenantId, groupId: list.groupId, senderId: context.senderId };
 
     // a) Responder do WhatsApp: valor no texto, item só na mensagem citada
