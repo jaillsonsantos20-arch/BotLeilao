@@ -28,7 +28,7 @@ import {
 } from './whatsapp.constants';
 import { formatCurrency, formatDateTimeBR, imageUrlToLocalPath, parseAmount } from './whatsapp.utils';
 import { ActiveAuctionMemory, ActiveListMemory, AuctionSetupState, ListAuctionEntry, ReplyContext, ScheduledEventMemory, WhatsAppGroupContext } from './whatsapp.types';
-import { createParser } from './list-bid.parser';
+import { createParser, isValueOnlyAfterFillers } from './list-bid.parser';
 import { pendingBidContextStore } from './pending-bid.context';
 
 export type MessageSender = (
@@ -1309,7 +1309,8 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       snapshot.map((e) => ({ id: e.auctionId, name: e.name, order: e.number })),
     );
     const parsed = parser.parseMessage(text);
-    const looksLikeBid = /^\s*(?:r\$|\$|[\d.,])/i.test(text);
+    const looksLikeBid =
+      /^\s*(?:r\$|\$|[\d.,])/i.test(text) || isValueOnlyAfterFillers(text);
     const senderKey = { tenantId: list.tenantId, groupId: list.groupId, senderId: context.senderId };
 
     // a) Responder do WhatsApp: valor no texto, item só na mensagem citada

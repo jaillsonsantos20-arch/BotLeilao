@@ -82,15 +82,36 @@ function normalizeMessage(message: string): string {
 
 /**
  * Remove palavras comuns que não são essenciais para identificação:
- * "r$", "real", "reais", "lance", "dou", "no", "na", "pro", "para"
- * Estas são removidas apenas quando não impedirem a identificação do item.
+ * moeda, verbo/intenção de lance e preposições/artigos.
+ * Assim "sou 120 no bolo" / "quer dar 120 no bolo" viram só "bolo"
+ * e casam com o nome do item (nível de tokens = 1.0).
  */
+const fillerWords = new Set([
+  // moeda / intenção
+  'r$', '$', 'real', 'reais', 'lance', 'lances', 'valor', 'oferta',
+  // verbo de lance
+  'dou', 'sou', 'quero', 'quer', 'queria', 'dar', 'levar', 'levo', 'pego',
+  'pago', 'fico', 'fica', 'vou', 'vamos', 'faz', 'fazer', 'manda', 'dessa', 'desse',
+  // preposição / artigo
+  'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
+  'pro', 'pra', 'para', 'por', 'com', 'o', 'a', 'os', 'as', 'um', 'uma',
+]);
+
 function stripFillerWords(message: string): string {
-  const fillerWords = ['r$', 'real', 'reais', 'lance', 'dou', 'no', 'na', 'pro', 'para'];
   return message
     .split(/\s+/)
-    .filter(token => !fillerWords.includes(token.toLowerCase()))
+    .filter(token => !fillerWords.has(token.toLowerCase()))
     .join(' ');
+}
+
+/**
+ * true quando, removidas as palavras de preenchimento, sobra só o valor:
+ * "sou 120", "lance de 120", "$22". Usado pelo motor para responder
+ * "qual item?" em vez de ignorar a mensagem em silêncio.
+ */
+export function isValueOnlyAfterFillers(message: string): boolean {
+  const stripped = stripFillerWords(normalizeMessage(message));
+  return /\d/.test(stripped) && /^[\s\d.,rR$]*$/.test(stripped);
 }
 
 /**

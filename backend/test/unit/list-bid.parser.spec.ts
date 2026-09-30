@@ -1,4 +1,4 @@
-import { createParser, ListBidParser } from '../../src/modules/whatsapp/list-bid.parser';
+import { createParser, isValueOnlyAfterFillers, ListBidParser } from '../../src/modules/whatsapp/list-bid.parser';
 
 const baseItems = [
   { id: 'a1', name: 'Bolo de goma', order: 1 },
@@ -171,5 +171,36 @@ describe('ListBidParser — ambiguidade (regra de ouro: nunca adivinhar)', () =>
     expect(r.itemId).toBeNull();
     expect(r.ambiguous).toBe(true);
     expect(r.candidates).toHaveLength(0);
+  });
+});
+
+describe('ListBidParser — frases naturais (verbo + valor + item)', () => {
+  const frases = [
+    'Lance de 120 no Bolo',
+    'Sou 120 no bolo',
+    'quero 120 bolo',
+    'quer dar 120 no bolo',
+    'vou levar 120 no bolo',
+    '120 no bolo',
+  ];
+
+  it.each(frases)('%s → item 1, R$ 120', (frase) => {
+    const r = parser().parseMessage(frase);
+    expect(r.amount).toBe(120);
+    expect(r.itemId).toBe('a1');
+    expect(r.itemNumber).toBe(1);
+    expect(r.ambiguous).toBe(false);
+    expect(r.confidence).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('detecta valor puro quando sobra so o numero ("sou 120", "lance de 120")', () => {
+    expect(isValueOnlyAfterFillers('sou 120')).toBe(true);
+    expect(isValueOnlyAfterFillers('lance de 120')).toBe(true);
+    expect(isValueOnlyAfterFillers('R$ 22')).toBe(true);
+  });
+
+  it('nao marca conversa como valor puro ("vou levar 3 caixas")', () => {
+    expect(isValueOnlyAfterFillers('vou levar 3 caixas')).toBe(false);
+    expect(isValueOnlyAfterFillers('bom dia a todos')).toBe(false);
   });
 });

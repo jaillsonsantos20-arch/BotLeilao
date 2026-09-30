@@ -196,6 +196,36 @@ describe('AuctionEngine — lances no modo lista (interpretador)', () => {
     expect(placeBid).not.toHaveBeenCalled();
     expect(messages).toHaveLength(0);
   });
+
+  it.each([
+    'Lance de 120 no Bolo',
+    'Sou 120 no bolo',
+    'quero 120 bolo',
+    'quer dar 120 no bolo',
+    'vou levar 120 no bolo',
+  ])('frase natural "%s" registra R$ 120 no item 1', async (frase) => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg(frase));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 120 }),
+    );
+  });
+
+  it('valor com verbo e sem item ("sou 120") pergunta qual item', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('sou 120'));
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[0]).toContain('Qual item?');
+    expect(messages[0]).toContain('120');
+  });
 });
 
 describe('AuctionEngine — regra 36 (lance via "Responder")', () => {
