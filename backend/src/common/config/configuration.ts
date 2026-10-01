@@ -38,6 +38,23 @@ export interface AppConfig {
     notificationUrl: string;
     webhookSecret: string;
   };
+  /**
+   * Speech-to-Text (lances por áudio).
+   *
+   * `provider` vazio = automático (habilitado apenas se houver API key).
+   * 'disabled' = áudio desativado; qualquer outro valor = provedor
+   * OpenAI-compatible (OpenAI, Groq, servidor local, etc.).
+   */
+  speechToText: {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    language: string;
+    timeoutMs: number;
+    maxAudioMb: number;
+    maxDurationSeconds: number;
+  };
 }
 
 export default (): AppConfig => ({
@@ -78,5 +95,18 @@ export default (): AppConfig => ({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN ?? '',
     notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL ?? '',
     webhookSecret: process.env.MERCADOPAGO_WEBHOOK_SECRET ?? '',
+  },
+  speechToText: {
+    provider: (process.env.SPEECH_TO_TEXT_PROVIDER ?? '').trim().toLowerCase(),
+    apiKey: process.env.SPEECH_TO_TEXT_API_KEY ?? '',
+    baseUrl: (process.env.SPEECH_TO_TEXT_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    model: process.env.SPEECH_TO_TEXT_MODEL ?? 'whisper-1',
+    language: process.env.SPEECH_TO_TEXT_LANGUAGE ?? 'pt',
+    timeoutMs: parseInt(process.env.SPEECH_TO_TEXT_TIMEOUT_MS ?? '20000', 10),
+    maxAudioMb: parseFloat(process.env.SPEECH_TO_TEXT_MAX_AUDIO_MB ?? '8'),
+    maxDurationSeconds: parseInt(
+      process.env.SPEECH_TO_TEXT_MAX_DURATION_SECONDS ?? '180',
+      10,
+    ),
   },
 });

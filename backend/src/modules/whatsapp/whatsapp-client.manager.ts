@@ -7,8 +7,10 @@ import { join } from 'path';
 import { PrismaService } from '../../common/database/prisma.service';
 import { AuctionEngine } from './auction.engine';
 import { CommandRouter } from './command-handler';
-import { ReplyContext, WhatsAppGroupContext } from './whatsapp.types';
+import { BidMessageInput, ReplyContext, WhatsAppGroupContext } from './whatsapp.types';
 import { WHATSAPP_CONNECT_TIMEOUT_MS, WHATSAPP_RECOVERY_COOLDOWN_MS } from './whatsapp.constants';
+import { ProcessedMessageStore } from './processed-message.store';
+import { SpeechToTextService } from './speech-to-text.service';
 
 /**
  * Gerencia os clientes do WhatsApp (um por tenant) com LocalAuth.
@@ -40,10 +42,17 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
   private watchdogTimer?: NodeJS.Timeout;
 
+  /**
+   * Idempotência: o WhatsApp pode reentregar o mesmo evento (reconect, rede).
+   * Sem isto, uma mensagem duplicada viraria dois lances.
+   */
+  private readonly processedMessages = new ProcessedMessageStore();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly router: CommandRouter,
     private readonly engine: AuctionEngine,
+    private readonly speechToText: SpeechToTextService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -578,6 +587,15 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Idempotência: o WhatsApp (e o web.js) podem reentregar o mesmo evento
+      // após reconect/queda de rede. Sem isto, o mesmo lance seria registrado
+      // duas vezes. Marca ANTES de processar qualquer coisa pesada.
+      const incomingId = message.id?._serialized;
+      if (incomingId && !this.processedMessages.mark(incomingId)) {
+        this.logger.log(`[DIAG] Mensagem duplicada ignorada (${incomingId}).`);
+        return;
+      }
+
       this.logger.log(
         `[DIAG] Mensagem de ${message.from} (author=${message.author ?? 'n/d'}): ${(message.body ?? '').slice(0, 80)}`,
       );
@@ -625,12 +643,111 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      await this.router.route(context, message, replyContext);
+      // --- Áudio (recado/PTT): transcreve e entra no MESMO pipeline ---
+      if (message.type === 'ptt' || message.type === 'audio') {
+        const audioInput = await this.transcribeAudio(message);
+        if (!audioInput) return; // falha já explicada ao participante
+        await this.router.route(context, message, replyContext, audioInput);
+        return;
+      }
+
+      const input: BidMessageInput = {
+        text: (message.body ?? '').trim(),
+        source: 'TEXT',
+        messageId: message.id?._serialized ?? undefined,
+      };
+      await this.router.route(context, message, replyContext, input);
     } catch (error) {
       // Um erro em uma mensagem não deve derrubar o processo nem o bot.
       this.logger.error(
         `Erro ao processar mensagem do grupo: ${(error as Error).message}`,
         (error as Error).stack,
+      );
+    }
+  }
+
+  /**
+   * Transcreve um áudio recebido (recado/PTT) para texto.
+   *
+   * O binário vive apenas em memória durante a chamada: nada é gravado em disco,
+   * nenhum byte de áudio é logado e nenhuma URL pública é criada. O resultado é
+   * apenas TEXTO e segue para o mesmo pipeline das mensagens digitadas — o áudio
+   * nunca registra lance diretamente.
+   *
+   * Devolve null quando o áudio não pôde ser lido; nesse caso a razão já foi
+   * explicada ao participante.
+   */
+  private async transcribeAudio(message: Message): Promise<BidMessageInput | null> {
+    const messageId = message.id?._serialized ?? undefined;
+
+    if (!this.speechToText.isEnabled()) {
+      await this.replyToMessage(message, this.speechToText.friendlyMessage('disabled'));
+      return null;
+    }
+
+    let media: MessageMedia | undefined;
+    try {
+      media = await message.downloadMedia();
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao baixar áudio (${messageId ?? 'id?'}): ${(error as Error).message}`,
+      );
+    }
+    if (!media?.data) {
+      await this.replyToMessage(message, this.speechToText.friendlyMessage('invalid_audio'));
+      return null;
+    }
+
+    const buffer = Buffer.from(media.data, 'base64');
+    const mimeType = media.mimetype || 'audio/ogg';
+    const result = await this.speechToText.transcribe({
+      buffer,
+      mimeType,
+      durationSeconds: this.audioDurationSeconds(message),
+    });
+
+    if (!result.ok) {
+      this.logger.warn(
+        `Speech-to-Text falhou (erro=${result.error}, provedor=${result.provider}, ${result.durationMs}ms).`,
+      );
+      await this.replyToMessage(message, this.speechToText.friendlyMessage(result.error));
+      return null;
+    }
+
+    const text = result.text.trim();
+    if (!text) {
+      await this.replyToMessage(message, this.speechToText.friendlyMessage('empty'));
+      return null;
+    }
+
+    this.logger.log(
+      `[DIAG] Áudio transcrito (${messageId ?? 'id?'}, ${result.durationMs}ms): ${text.slice(0, 80)}`,
+    );
+    return {
+      text,
+      source: 'AUDIO',
+      transcription: text,
+      messageId,
+      transcriptionQuality: result.quality,
+    };
+  }
+
+  /** Duração em segundos do áudio (o whatsapp-web.js entrega string). */
+  private audioDurationSeconds(message: Message): number | null {
+    const raw = (message as { duration?: unknown }).duration;
+    const value =
+      typeof raw === 'string' ? Number.parseFloat(raw) : typeof raw === 'number' ? raw : NaN;
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  /** Envia texto na conversa de onde veio a mensagem (ex.: falha de transcrição). */
+  private async replyToMessage(message: Message, text: string): Promise<void> {
+    try {
+      const chat = await message.getChat();
+      await chat.sendMessage(text);
+    } catch (error) {
+      this.logger.warn(
+        `Não foi possível responder a mensagem de áudio: ${(error as Error).message}`,
       );
     }
   }

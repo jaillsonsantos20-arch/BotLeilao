@@ -21,10 +21,17 @@ function buildManager() {
       upsert: jest.fn(),
     },
   };
+  // Speech-to-Text desativado: este spec não exercita o fluxo de áudio.
+  const speechToText = {
+    isEnabled: () => false,
+    friendlyMessage: () => '',
+    transcribe: jest.fn(),
+  } as never;
   const manager = new WhatsAppClientManager(
     prisma as never,
     {} as never,
     {} as never,
+    speechToText,
   );
   return { manager, prisma };
 }

@@ -26,3 +26,43 @@ export const WHATSAPP_REPLY_CONTEXT_MAX = 2000;
 
 /** Idade mínima para apagar vínculos "mensagem -> item" do banco (em dias). */
 export const WHATSAPP_REPLY_BINDING_TTL_DAYS = 30;
+
+// ---------------------------------------------------------------------------
+// Confirmação de lance (confiança intermediária)
+// ---------------------------------------------------------------------------
+
+/** Validade de uma confirmação pendente antes de expirar. */
+export const BID_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
+
+/** Máximo de confirmações pendentes mantidas em memória. */
+export const BID_CONFIRMATION_MAX = 1000;
+
+/** Mensagens idempotentes (mesmo WhatsApp Message ID nunca processa duas vezes). */
+export const WHATSAPP_PROCESSED_MESSAGE_TTL_MS = 10 * 60 * 1000;
+export const WHATSAPP_PROCESSED_MESSAGE_MAX = 5000;
+
+// ---------------------------------------------------------------------------
+// Contexto de disputa ativa (contexto automático por item)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validade do contexto de disputa de um item (em segundos).
+ *
+ * 5 minutos: maior que o TTL do "qual item?" (2 min) e que a duração padrão de
+ * um lance (2 min), para nunca derrubar uma cadeia natural de lances no meio;
+ * curto o bastante para que um item parado há 5 min não "herde" um lance novo.
+ */
+export const ACTIVE_BID_CONTEXT_TTL_SECONDS = 5 * 60;
+export const ACTIVE_BID_CONTEXT_TTL_MS = ACTIVE_BID_CONTEXT_TTL_SECONDS * 1000;
+
+/** Máximo de contextos de disputa mantidos em memória (por processo). */
+export const ACTIVE_BID_CONTEXT_MAX = 2000;
+
+// ---------------------------------------------------------------------------
+// Speech-to-Text (áudio)
+// ---------------------------------------------------------------------------
+
+/** Teto padrão de duração de áudio aceito (sobrescrevível por env). */
+export const SPEECH_TO_TEXT_DEFAULT_MAX_AUDIO_MB = 8;
+export const SPEECH_TO_TEXT_DEFAULT_MAX_DURATION_SECONDS = 180;
+export const SPEECH_TO_TEXT_DEFAULT_TIMEOUT_MS = 20000;

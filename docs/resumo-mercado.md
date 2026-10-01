@@ -29,6 +29,9 @@ grupos, leilões, usuários e relatórios.
 ## Diferenciais
 
 - Zero app para o comprador — basta digitar o número no grupo.
+- Lance por texto, áudio, resposta a card e **sinônimos cadastrados no painel**
+  ("150 no boi" entende o item "Garrote"), com confiança em 3 níveis e
+  confirmação antes de registrar — o bot nunca escolhe item sozinho.
 - Automação total do ciclo: lance → cronômetro → fechamento → vencedor → relatório.
 - QR Code faz conexão fácil e sessão persistida (reconexão automática).
 - Modelo SaaS com planos e assinaturas, multi-tenant por cliente.
@@ -43,7 +46,7 @@ SaaS com cadastro (tenant) + planos, preparado para cobrança recorrente
 - Backend: NestJS 11, Prisma 6, PostgreSQL 16, Redis 7, JWT, whatsapp-web.js
 - Frontend: React 18, Vite, TypeScript, Tailwind, TanStack Query, Recharts
 - Infra: Docker Compose, Nginx, GitHub Actions (CI)
-- Qualidade: 21 testes unitários + 12 testes e2e
+- Qualidade: 291 testes unitários + 12 testes e2e
 
 ## Pontos a validar na pesquisa de mercado
 

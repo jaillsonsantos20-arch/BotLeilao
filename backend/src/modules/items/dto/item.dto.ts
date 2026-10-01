@@ -1,5 +1,8 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
   IsInt,
   IsNumber,
   IsOptional,
@@ -9,6 +12,9 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+/** Máximo de variações (sinônimos) por item — limite de segurança do painel. */
+export const ITEM_ALIAS_MAX_PER_ITEM = 30;
 
 export class CreateItemDto {
   @IsOptional()
@@ -48,6 +54,22 @@ export class CreateItemDto {
   @Min(1, { message: 'A duração mínima é de 1 minuto.' })
   @Max(1440, { message: 'A duração máxima é de 1440 minutos (24 horas).' })
   durationMinutes?: number | null;
+
+  /**
+   * Variações/sinônimos do item ("boi", "gado", "novilho"): participantes
+   * podem usar qualquer uma para indicar este item. Nunca cria item novo.
+   */
+  @IsOptional()
+  @IsArray({ message: 'As variações devem ser uma lista de textos.' })
+  @ArrayMaxSize(ITEM_ALIAS_MAX_PER_ITEM, {
+    message: `Máximo de ${ITEM_ALIAS_MAX_PER_ITEM} variações por item.`,
+  })
+  @IsString({ each: true, message: 'Cada variação deve ser um texto.' })
+  @Length(1, 60, {
+    each: true,
+    message: 'Cada variação deve ter entre 1 e 60 caracteres.',
+  })
+  aliases?: string[];
 }
 
 export class ListItemsQueryDto {
@@ -116,4 +138,27 @@ export class UpdateItemDto {
   @Min(0, { message: 'A duração mínima é de 0 minutos.' })
   @Max(1440, { message: 'A duração máxima é de 1440 minutos (24 horas).' })
   durationMinutes?: number | null;
+}
+
+/** Criação de uma variação (sinônimo) de item. */
+export class CreateItemAliasDto {
+  @IsString({ message: 'A variação deve ser um texto.' })
+  @Length(1, 60, {
+    message: 'A variação deve ter entre 1 e 60 caracteres.',
+  })
+  value: string;
+}
+
+/** Edição de uma variação: troca o texto e/ou ativa/desativa. */
+export class UpdateItemAliasDto {
+  @IsOptional()
+  @IsString({ message: 'A variação deve ser um texto.' })
+  @Length(1, 60, {
+    message: 'A variação deve ter entre 1 e 60 caracteres.',
+  })
+  value?: string;
+
+  @IsOptional()
+  @IsBoolean({ message: 'O campo active deve ser true ou false.' })
+  active?: boolean;
 }

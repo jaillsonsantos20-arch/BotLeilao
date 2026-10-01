@@ -24,12 +24,44 @@ interface Item {
   id: string;
   name: string; // nome original, ex: "Capão 01", "Garrafa térmica de 2.5lt"
   order: number; // posição 1-based no leilão
+  /**
+   * Variações/sinônimos cadastrados pelo administrador, JÁ normalizados e
+   * apenas as ativas (ex.: ["boi", "gado", "novilho"] para "Garrote").
+   *
+   * Uma variação nunca é um item novo: é outra forma de nomear o mesmo item.
+   * O snapshot de leilão carrega apenas `active = true` (item.inativo não
+   * participa da interpretação).
+   */
+  aliases?: string[];
 }
+
+/**
+ * Como o item foi identificado na mensagem.
+ *
+ * É o fator mais forte do Confidence Engine: ele diz ao motor se o item veio
+ * de um número explícito (certeza), de um nome completo (quase certeza), de um
+ * nome parcial (confirmação depende da cobertura) ou de fuzzy (sempre
+ * confirma). `reply_context` e `active_bid_context` são preenchidos pelo
+ * motor, nunca pelo parser.
+ *
+ * `item_alias` = termo cadastrado pelo administrador na lista de variações do
+ * item ("150 no boi" → "Garrote"): evidência forte, mas nunca vence um
+ * conflito entre dois itens — nesse caso o parser devolve `ambiguous`.
+ */
+export type BidMatchedBy =
+  | 'item_number'
+  | 'item_name_exact'
+  | 'item_name_partial'
+  | 'item_name_fuzzy'
+  | 'item_alias'
+  | 'reply_context'
+  | 'active_bid_context'
+  | 'none';
 
 /**
  * Resultado da interpretação de uma mensagem de lance.
  * O interpretador APENAS interpreta - NÃO cria lance nem valida regras de negócio.
- * 
+ *
  * Todos os campos são preenchidos para que a camada de negócio possa tomar a decisão
  * adequada (registrar, perguntar, rejeitar).
  */
@@ -45,6 +77,21 @@ export interface ParsedBidResult {
   itemNumber: number | null; // nº do item 1-based (como aparece no WhatsApp)
   itemId: string | null; // ID do item no banco, se encontrado
   itemName: string | null; // nome original do item correspondente
+
+  /** Como o item foi identificado (fator principal de confiança). */
+  matchedBy: BidMatchedBy;
+  /**
+   * Trecho da mensagem que casou com o item — para `item_alias` é a variação
+   * cadastrada usada no reconhecimento (ex.: "boi"). Nulo nas outras origens.
+   */
+  matchedText?: string | null;
+  /**
+   * Fração do nome do item (sem palavras de preenchimento) presente na
+   * mensagem: 1.0 = nome inteiro citado, 0.5 = metade. Usado para decidir se
+   * um nome parcial registra direto ou pede confirmação. 1.0 quando não há
+   * nome na mensagem (match por número).
+   */
+  matchCoverage: number;
 
   // Confiança e ambiguidade
   confidence: number; // 0.0 a 1.0 - confiança geral na interpretação
@@ -69,9 +116,14 @@ export interface ParsedBidResult {
 }
 
 /**
- * Normaliza a mensagem: lowercase, remove acentos, normaliza espaços.
+ * Normaliza um texto para comparação: minúsculas, sem acentos e com espaços
+ * colapsados.
+ *
+ * É o ÚNICO utilitário de normalização do projeto: mensagens de lance, nomes
+ * de item e variações cadastradas pelo administrador passam por aqui
+ * (" BOI " → "boi", "Novilho." → "novilho", "Garçáfa Térmica" → "garcafa termica").
  */
-function normalizeMessage(message: string): string {
+export function normalizeMessage(message: string): string {
   let result = message.toLowerCase();
   // Remove acentos via normalização NFD
   result = result.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -114,6 +166,180 @@ export function isValueOnlyAfterFillers(message: string): boolean {
   return /\d/.test(stripped) && /^[\s\d.,rR$]*$/.test(stripped);
 }
 
+// ---------------------------------------------------------------------------
+// Variações/sinônimos cadastrados pelo administrador (item alias)
+// ---------------------------------------------------------------------------
+
+/**
+ * Score mínimo de um concorrente pelo NOME do item para disputar uma
+ * variação. 0.85 = cobertura total dos tokens da mensagem ("boi" dentro de
+ * "Boi para reprodução"). Abaixo disso a variação vence; acima disso o parser
+ * pergunta qual item — variação NUNCA escolhe sozinha entre dois itens.
+ */
+export const ALIAS_COMPETE_MIN = 0.85;
+
+/** Score de variação casada de forma exata (mensagem = variação). */
+const ALIAS_SCORE_EXACT = 0.97;
+/** Score de variação encontrada dentro da frase ("eu dou 180 naquele boi"). */
+const ALIAS_SCORE_CONTAINS = 0.93;
+
+/** Uma variação encontrada e o item a que aponta. */
+export interface AliasHit {
+  item: Item;
+  /** Variação normalizada que casou (ex.: "boi"). */
+  alias: string;
+  score: number;
+}
+
+export interface AliasMatches {
+  /** Melhor variação por item (chave = id do item). */
+  byItem: Map<string, AliasHit>;
+  /** Todas as variações encontradas na mensagem (normalizadas, sem repetir). */
+  matched: string[];
+}
+
+/** true quando `needle` aparece como sequência contígua de tokens em `haystack`. */
+function containsSequence(haystack: string[], needle: string[]): boolean {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    let found = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        found = false;
+        break;
+      }
+    }
+    if (found) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove pontuação nas bordas do token ("boi!" → "boi", "vai." → "vai").
+ * Só nas bordas: a mensagem pode ter vírgula/ponto colado na palavra e a
+ * variação continua sendo a mesma. Nunca mexe no valor ("3." do "3. 110").
+ */
+function stripEdgePunctuation(token: string): string {
+  return token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+}
+
+/**
+ * Procura as variações cadastradas dos itens na mensagem.
+ *
+ * Duas formas, ambas com normalização única do projeto:
+ *  - exata:     "150 no boi"      → nameMsg "boi"  == variação "boi";
+ *  - contígua:  "eu dou 180 naquele boi" / "130 na garrafa de café" — a
+ *    variação aparece como sequência de tokens dentro do texto, mesmo com
+ *    preenchimentos ("na", "de") e palavras ao redor.
+ *
+ * Variações inativas nunca chegam aqui: o snapshot só envia `active = true`.
+ */
+export function collectAliasMatches(
+  items: Item[],
+  nameTokens: string[],
+  rawTokens: string[],
+): AliasMatches {
+  const byItem = new Map<string, AliasHit>();
+  const matched: string[] = [];
+  // Pontuação só nas bordas ("boi!" → "boi") — variação continua casando.
+  const hayName = nameTokens.map(stripEdgePunctuation).filter(Boolean);
+  const hayRaw = rawTokens.map(stripEdgePunctuation).filter(Boolean);
+  const nameMsg = hayName.join(' ');
+
+  if (nameMsg.length === 0 && hayRaw.length === 0) return { byItem, matched };
+
+  for (const item of items) {
+    for (const rawAlias of item.aliases ?? []) {
+      const alias = normalizeMessage(String(rawAlias ?? ''));
+      if (!alias) continue;
+      const aliasTokens = alias
+        .split(/\s+/)
+        .map(stripEdgePunctuation)
+        .filter(Boolean);
+      if (aliasTokens.length === 0) continue;
+
+      let score = 0;
+      if (aliasTokens.join(' ') === nameMsg) {
+        score = ALIAS_SCORE_EXACT;
+      } else if (containsSequence(hayRaw, aliasTokens) || containsSequence(hayName, aliasTokens)) {
+        score = ALIAS_SCORE_CONTAINS;
+      }
+      if (score === 0) continue;
+
+      if (!matched.includes(alias)) matched.push(alias);
+
+      const current = byItem.get(item.id);
+      if (!current || current.score < score) {
+        byItem.set(item.id, { item, alias, score });
+      }
+    }
+  }
+
+  return { byItem, matched };
+}
+
+export type AliasDecision =
+  | { kind: 'match'; hit: AliasHit }
+  | {
+      kind: 'ambiguous';
+      candidates: Array<{ item: Item; score: number }>;
+      matchedText: string | null;
+    };
+
+/**
+ * Decide o que fazer com as variações encontradas.
+ *
+ * REGRA: variação cadastrada é evidência forte, mas nunca vence um conflito.
+ *  - nenhuma variação            → null (seguir o caminho normal de nomes);
+ *  - variação de 1 item          → match, salvo se OUTRO item tiver nome
+ *                                  forte na mensagem (≥ ALIAS_COMPETE_MIN);
+ *  - variação de 2+ itens        → ambíguo (pergunta o Nº, nunca adivinha).
+ */
+export function decideWithAlias(
+  matches: AliasMatches,
+  nameCandidates: Array<{ item: Item; score: number }>,
+): AliasDecision | null {
+  if (matches.byItem.size === 0) return null;
+
+  const hits = [...matches.byItem.values()];
+  const hitItemIds = new Set(hits.map((h) => h.item.id));
+  const competitors = nameCandidates.filter(
+    (c) => !hitItemIds.has(c.item.id) && c.score >= ALIAS_COMPETE_MIN,
+  );
+
+  const all = [
+    ...hits.map((h) => ({ item: h.item, score: h.score })),
+    ...competitors.map((c) => ({ item: c.item, score: c.score })),
+  ];
+  const distinctItemIds = new Set(all.map((a) => a.item.id));
+
+  if (distinctItemIds.size > 1) {
+    all.sort((a, b) => b.score - a.score);
+    const best = hits.reduce((a, b) => (b.score > a.score ? b : a));
+    return { kind: 'ambiguous', candidates: all, matchedText: best.alias };
+  }
+
+  const best = hits.reduce((a, b) => (b.score > a.score ? b : a));
+  return { kind: 'match', hit: best };
+}
+
+/**
+ * Itens apontados por NÚMEROS soltos na mensagem ("01", "2"), ignorando
+ * números que fazem parte do nome. Usado para detectar conflito
+ * "número + variação" — dois itens diferentes na mesma frase.
+ */
+function itemsByNumberTokens(items: Item[], tokens: string[]): Item[] {
+  const found: Item[] = [];
+  for (const token of tokens) {
+    if (!/^\d{1,4}$/.test(token)) continue;
+    const number = parseInt(token, 10);
+    if (number <= 0) continue;
+    const item = items.find((i) => i.order === number);
+    if (item && !found.some((f) => f.id === item.id)) found.push(item);
+  }
+  return found;
+}
+
 /**
  * Classifica o nível de correspondência do item.
  */
@@ -123,6 +349,40 @@ enum MatchLevel {
   PartialName = 'partialName',      // correspondência parcial única
   Fuzzy = 'fuzzy',                  // fuzzy matching controlado
   None = 'none'                     // nenhuma correspondência
+}
+
+/** Traduz o nível de match do parser para o vocabulário do Confidence Engine. */
+function matchedByFromLevel(level: MatchLevel): BidMatchedBy {
+  switch (level) {
+    case MatchLevel.ExactNumber:
+      return 'item_number';
+    case MatchLevel.ExactName:
+      return 'item_name_exact';
+    case MatchLevel.PartialName:
+      return 'item_name_partial';
+    case MatchLevel.Fuzzy:
+      return 'item_name_fuzzy';
+    default:
+      return 'none';
+  }
+}
+
+/**
+ * Fração dos tokens significativos do item citados na mensagem.
+ *
+ * "bolo" → item "Bolo de Goma" = 0.5 (citou "bolo", faltou "goma").
+ * Nome exato → 1.0. Mensagem sem nome → 0 (sem evidência nenhuma do nome),
+ * o que obriga o Confidence Engine a confirmar antes de registrar.
+ */
+function computeCoverage(item: Item, nameTokens: string[]): number {
+  if (nameTokens.length === 0) return 0;
+  const itemTokens = stripFillerWords(normalizeItemName(item.name))
+    .split(/\s+/)
+    .filter(Boolean);
+  if (itemTokens.length === 0) return 1;
+  const messageTokens = new Set(nameTokens.map((t) => normalizeItemName(t)));
+  const hits = itemTokens.filter((t) => messageTokens.has(t)).length;
+  return hits / itemTokens.length;
 }
 
 /**
@@ -146,12 +406,15 @@ function scoreCandidate(
     levelNum = 1;
   }
 
-  // Nível 2: Nome exato normalizado
-  const normalizedItemName = item.name.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (normalizedItemName === normalizedMsg) {
+  // Nível 2: Nome exato normalizado (também aceita quando, removidas as
+  // palavras de preenchimento do NOME DO ITEM, sobra exatamente o que o
+  // usuário digitou: "bolo goma" casando com "Bolo de Goma").
+  const normalizedItemName = normalizeItemName(item.name);
+  if (
+    normalizedMsg.length > 0 &&
+    (normalizedItemName === normalizedMsg ||
+      stripFillerWords(normalizedItemName) === normalizedMsg)
+  ) {
     score = Math.max(score, 0.95);
     if (levelNum < 2) {
       level = MatchLevel.ExactName;
@@ -160,9 +423,7 @@ function scoreCandidate(
   }
 
   // Nível 3: Tokens coincidentes
-  const itemTokenSet = new Set(item.name.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .split(' '));
+  const itemTokenSet = new Set(normalizedItemName.split(' '));
   let tokenMatchCount = 0;
   for (const token of itemTokens) {
     if (itemTokenSet.has(token)) {
@@ -181,16 +442,20 @@ function scoreCandidate(
     }
   }
 
-  // Nível 4: Fuzzy matching controlado (pequenas diferenças de digitação)
-  // Verifica se a distância de edição é pequena
+  // Nível 4: Fuzzy matching controlado (pequenas diferenças de digitação).
+  // O score pode subir aqui, mas o RÓTULO só vira "fuzzy" quando ainda não
+  // havia match exato: um nome/número exato nunca pode ser rebaixado, senão o
+  // Confidence Engine passaria a pedir confirmação para frases perfeitamente
+  // identificadas ao nome do item.
   const levenshtein = levenshteinDistance(normalizedMsg, normalizedItemName);
   const maxLen = Math.max(normalizedMsg.length, normalizedItemName.length || 1);
   const editRatio = levenshtein / maxLen;
-  if (editRatio <= 0.3) { // até 30% de diferença
+  if (editRatio <= 0.3) {
     const fuzzyScore = 1.0 - editRatio;
     if (score < fuzzyScore) {
       score = fuzzyScore;
-      if (levelNum < 4) {
+      // Não rebaixa match exato (número = 1, nome = 2); todo o resto vira fuzzy.
+      if (levelNum !== 1 && levelNum !== 2) {
         level = MatchLevel.Fuzzy;
       }
     }
@@ -251,9 +516,7 @@ function resolveByNumber(
   // Se não encontrou pelo order, tenta verificar se o número está no nome do item
   // Ex: "Capão 01" - o "01" no nome também seria correspondência
   for (const item of items) {
-    const normalizedName = item.name.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ');
+    const normalizedName = normalizeMessage(item.name);
     if (normalizedName.includes(numberStr)) {
       return { item, level: MatchLevel.PartialName, score: 0.6 };
     }
@@ -335,9 +598,7 @@ function checkUniqueMatch(
   const candidateSummaries = validCandidates.map(c => ({
     itemNumber: c.item.order,
     itemName: c.item.name,
-    normalizedName: c.item.name.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' '),
+    normalizedName: normalizeMessage(c.item.name),
     score: c.score
   }));
 
@@ -396,6 +657,8 @@ export class ListBidParser {
       itemNumber: null,
       itemId: null,
       itemName: null,
+      matchedBy: 'none',
+      matchCoverage: 0,
       confidence: 0,
       ambiguous: false,
       candidates: [],
@@ -460,6 +723,10 @@ export class ListBidParser {
     let ambiguous = false;
     let candidates: Array<{ itemNumber: number; itemName: string; normalizedName: string; score: number }> = [];
     let needsUserInput = false;
+    let matchedBy: BidMatchedBy = 'none';
+    let matchCoverage = 0;
+    let matchedText: string | null = null;
+    let reasonOverride: string | null = null;
 
     const toCandidate = (item: Item, score: number) => ({
       itemNumber: item.order,
@@ -473,11 +740,36 @@ export class ListBidParser {
         // Formato A: o nº veio explícito — resolve só por número
         const r = resolveByNumber(this.items, String(claimedNumber));
         if (r.item) {
-          itemNumber = r.item.order;
-          itemId = r.item.id;
-          itemName = r.item.name;
-          matchScore = r.score;
-          candidates = [toCandidate(r.item, r.score)];
+          const numberItem = r.item;
+          // Número + variação de OUTRO item ("01 180 na garrafa"): dois itens
+          // na mesma frase → conflito. O nº explícito não pode ser ignorado e a
+          // variação não pode sobrescrevê-lo: pergunta ao participante.
+          const aliasConflicts = [
+            ...collectAliasMatches(this.items, nameTokens, remainingTokens).byItem.values(),
+          ].filter((hit) => hit.item.id !== numberItem.id);
+
+          if (aliasConflicts.length > 0) {
+            ambiguous = true;
+            needsUserInput = true;
+            matchedBy = 'item_alias';
+            matchedText = aliasConflicts.map((c) => c.alias).join(', ');
+            candidates = [
+              toCandidate(r.item, r.score),
+              ...aliasConflicts.map((c) => toCandidate(c.item, c.score)),
+            ].slice(0, this.maxCandidates);
+            reasonOverride =
+              `Nº ${claimedNumber} conflita com a variação "${matchedText}" ` +
+              `do item ${aliasConflicts[0].item.order} • ${aliasConflicts[0].item.name}; ` +
+              'participante deve escolher o item.';
+          } else {
+            itemNumber = r.item.order;
+            itemId = r.item.id;
+            itemName = r.item.name;
+            matchScore = r.score;
+            candidates = [toCandidate(r.item, r.score)];
+            matchedBy = matchedByFromLevel(r.level);
+            matchCoverage = matchedBy === 'item_number' ? 1 : computeCoverage(r.item, nameTokens);
+          }
         } else {
           // Nº alegado não existe na lista (o chamador orienta o usuário)
           itemNumber = claimedNumber;
@@ -496,34 +788,89 @@ export class ListBidParser {
             itemName = r.item.name;
             matchScore = r.score;
             candidates = [toCandidate(r.item, r.score)];
+            matchedBy = matchedByFromLevel(r.level);
+            matchCoverage = matchedBy === 'item_number' ? 1 : computeCoverage(r.item, nameTokens);
             resolved = true;
           }
         }
 
         if (!resolved) {
-          // Nome (níveis 2-4: exato, tokens, fuzzy)
+          // Variações cadastradas pelo administrador são evidência forte e
+          // entram ANTES da comparação por nome: "150 no boi" → "Garrote".
+          const aliasMatches = collectAliasMatches(this.items, nameTokens, remainingTokens);
           const nameResult = resolveByName(this.items, nameMsg, nameTokens);
-          const uniqueMatch = checkUniqueMatch(this.items, nameResult);
+          const aliasDecision = decideWithAlias(aliasMatches, nameResult.candidates);
 
-          if (uniqueMatch.match) {
-            itemNumber = uniqueMatch.item.order;
-            itemId = uniqueMatch.item.id;
-            itemName = uniqueMatch.item.name;
-            matchScore =
-              nameResult.candidates.find((c) => c.item === uniqueMatch.item)?.score ?? 0.5;
-            candidates = nameResult.candidates
-              .filter((c) => c.score >= 0.5)
-              .slice(0, this.maxCandidates)
-              .map((c) => toCandidate(c.item, c.score));
-          } else if (uniqueMatch.candidates.length > 0) {
-            // Ambíguo — vários itens parecidos: NUNCA escolhe sozinho
-            ambiguous = true;
-            candidates = uniqueMatch.candidates.slice(0, this.maxCandidates);
-            needsUserInput = true;
+          if (aliasDecision) {
+            const poolItems: Item[] =
+              aliasDecision.kind === 'match'
+                ? [aliasDecision.hit.item]
+                : aliasDecision.candidates.map((c) => c.item);
+            // Número solto que aponta para OUTRO item ("150 boi 02") também é
+            // conflito: dois itens na mesma frase → perguntar, nunca tentar.
+            const numberConflicts = itemsByNumberTokens(this.items, nameTokens).filter(
+              (item) => !poolItems.some((p) => p.id === item.id),
+            );
+
+            matchedText =
+              aliasDecision.kind === 'match'
+                ? aliasDecision.hit.alias
+                : aliasDecision.matchedText;
+
+            if (aliasDecision.kind === 'ambiguous' || numberConflicts.length > 0) {
+              ambiguous = true;
+              needsUserInput = true;
+              matchedBy = 'item_alias';
+
+              const pool =
+                aliasDecision.kind === 'ambiguous'
+                  ? [...aliasDecision.candidates]
+                  : [{ item: aliasDecision.hit.item, score: aliasDecision.hit.score }];
+              for (const item of numberConflicts) {
+                if (!pool.some((p) => p.item.id === item.id)) pool.push({ item, score: 1.0 });
+              }
+              pool.sort((a, b) => b.score - a.score);
+              candidates = pool.slice(0, this.maxCandidates).map((p) => toCandidate(p.item, p.score));
+              reasonOverride =
+                `Variação "${matchedText}" e/ou nº da mensagem apontam para ` +
+                `${candidates.length} itens; participante deve escolher.`;
+            } else {
+              const hit = aliasDecision.hit;
+              itemNumber = hit.item.order;
+              itemId = hit.item.id;
+              itemName = hit.item.name;
+              matchScore = hit.score;
+              matchedBy = 'item_alias';
+              matchCoverage = 1;
+              candidates = [toCandidate(hit.item, hit.score)];
+            }
           } else {
-            // Valor ok, mas nenhum item reconhecido
-            ambiguous = true;
-            needsUserInput = true;
+            const uniqueMatch = checkUniqueMatch(this.items, nameResult);
+
+            if (uniqueMatch.match) {
+              itemNumber = uniqueMatch.item.order;
+              itemId = uniqueMatch.item.id;
+              itemName = uniqueMatch.item.name;
+              const matchedCandidate = nameResult.candidates.find(
+                (c) => c.item === uniqueMatch.item,
+              );
+              matchScore = matchedCandidate?.score ?? 0.5;
+              matchedBy = matchedByFromLevel(matchedCandidate?.level ?? MatchLevel.None);
+              matchCoverage = computeCoverage(uniqueMatch.item, nameTokens);
+              candidates = nameResult.candidates
+                .filter((c) => c.score >= 0.5)
+                .slice(0, this.maxCandidates)
+                .map((c) => toCandidate(c.item, c.score));
+            } else if (uniqueMatch.candidates.length > 0) {
+              // Ambíguo — vários itens parecidos: NUNCA escolhe sozinho
+              ambiguous = true;
+              candidates = uniqueMatch.candidates.slice(0, this.maxCandidates);
+              needsUserInput = true;
+            } else {
+              // Valor ok, mas nenhum item reconhecido
+              ambiguous = true;
+              needsUserInput = true;
+            }
           }
         }
       }
@@ -547,8 +894,12 @@ export class ListBidParser {
     }
 
     // Monta motivo legível
-    if (ambiguous && candidates.length > 0) {
+    if (reasonOverride) {
+      result.reason = reasonOverride;
+    } else if (ambiguous && candidates.length > 0) {
       result.reason = `Lance de R$ ${formatAmount(amount ?? 0)} identificado, mas ${candidates.length} item(ns) correspondem: ${candidates.map((c) => `${c.itemNumber} • ${c.itemName}`).join(', ')}`;
+    } else if (itemId && amount && matchedBy === 'item_alias') {
+      result.reason = `Lance de R$ ${formatAmount(amount)} no item ${itemNumber} • ${itemName} (variação "${matchedText}")`;
     } else if (itemId && amount) {
       result.reason = `Lance de R$ ${formatAmount(amount)} no item ${itemNumber} • ${itemName}`;
     } else if ((amount ?? 0) > 0 && itemNumber !== null && !itemId) {
@@ -566,20 +917,18 @@ export class ListBidParser {
     result.itemNumber = itemNumber;
     result.itemId = itemId;
     result.itemName = itemName;
+    result.matchedBy = matchedBy;
+    result.matchedText = matchedText;
+    result.matchCoverage = Math.min(Math.max(matchCoverage, 0), 1);
     result.needsUserInput = needsUserInput;
 
     return result;
   }
 }
 
-/** Normaliza um nome de item para comparação (lowercase + sem acentos). */
+/** Normaliza um nome de item para comparação (minúsculas, sem acentos). */
 function normalizeItemName(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeMessage(name);
 }
 
 /**

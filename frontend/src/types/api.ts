@@ -120,6 +120,21 @@ export interface AuctionListItem {
   bidCount: number;
 }
 
+/**
+ * Variação (sinônimo) de item cadastrada no painel — ex.: "boi" aponta para o
+ * item "Garrote". Só as ativas participam da interpretação do lance.
+ */
+export interface ItemAlias {
+  id: string;
+  tenantId: string;
+  itemId: string;
+  value: string;
+  normalizedValue: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Item {
   id: string;
   tenantId: string;
@@ -134,6 +149,7 @@ export interface Item {
   createdAt: string;
   updatedAt: string;
   auctionCount: number;
+  aliases?: ItemAlias[];
 }
 
 export interface Auction {

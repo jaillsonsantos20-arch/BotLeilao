@@ -7,7 +7,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { Auction, AuctionEventStatus, AuctionStatus, ItemStatus, Prisma } from '@prisma/client';
+import { Auction, AuctionEventStatus, AuctionStatus, ItemStatus, LogLevel, Prisma } from '@prisma/client';
 import { Message } from 'whatsapp-web.js';
 import { AuctionsService } from '../auctions/auctions.service';
 import { GroupsService } from '../groups/groups.service';
@@ -27,9 +27,33 @@ import {
   WHATSAPP_WARNING_THIRD_SECONDS,
 } from './whatsapp.constants';
 import { formatCurrency, formatDateTimeBR, imageUrlToLocalPath, parseAmount } from './whatsapp.utils';
-import { ActiveAuctionMemory, ActiveListMemory, AuctionSetupState, ListAuctionEntry, ReplyContext, ScheduledEventMemory, WhatsAppGroupContext } from './whatsapp.types';
-import { createParser, isValueOnlyAfterFillers } from './list-bid.parser';
+import {
+  ActiveAuctionMemory,
+  ActiveListMemory,
+  AuctionSetupState,
+  BidMessageInput,
+  BidSource,
+  ListAuctionEntry,
+  ReplyContext,
+  ScheduledEventMemory,
+  WhatsAppGroupContext,
+} from './whatsapp.types';
+import { createParser, isValueOnlyAfterFillers, normalizeMessage, ParsedBidResult } from './list-bid.parser';
 import { pendingBidContextStore } from './pending-bid.context';
+import {
+  confirmationQuestion,
+  parseConfirmationResponse,
+  pendingBidConfirmationStore,
+  PendingBidConfirmation,
+} from './pending-bid-confirmation';
+import { activeBidContextStore } from './active-bid.context';
+import {
+  ActiveBidContextCandidate,
+  ActiveBidContextSignal,
+  applyTranscriptionQuality,
+  evaluateBidConfidence,
+} from './confidence.engine';
+import { spokenNumbersToDigits } from './spoken-numbers';
 
 export type MessageSender = (
   tenantId: string,
@@ -40,6 +64,22 @@ export type MessageSender = (
 
 /** Envia uma reação (ex.: ✅) na mensagem do participante. */
 export type MessageReactionSender = (message: Message, emoji: string) => Promise<void>;
+
+/** Resultado legível da interpretação gravado na auditoria (`Log`). */
+function auditResult(decision: string): string {
+  switch (decision) {
+    case 'register':
+      return 'REGISTERED';
+    case 'confirm':
+      return 'CONFIRMATION_REQUIRED';
+    case 'clarify':
+      return 'AMBIGUOUS';
+    case 'reject':
+      return 'REJECTED';
+    default:
+      return 'ORIENTED';
+  }
+}
 
 /**
  * Motor de leilões do WhatsApp.
@@ -1192,8 +1232,15 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     context: WhatsAppGroupContext,
     message: Message,
     replyContext?: ReplyContext,
+    input?: BidMessageInput,
   ): Promise<void> {
-    const text = (message.body ?? '').trim();
+    const rawText = (input?.text ?? message.body ?? '').trim();
+    const source: BidSource = input?.source ?? 'TEXT';
+
+    // Números por extenso só existem em TRANSCRIÇÕES: mensagens digitadas
+    // passam por aqui intactas (nenhum comportamento de texto é alterado).
+    const text =
+      source === 'AUDIO' ? spokenNumbersToDigits(rawText) : rawText;
 
     // --- Responder do WhatsApp: participante respondeu uma mensagem do bot
     // que mencionava um item, enviando apenas o valor do lance ("46", "R$ 46").
@@ -1221,6 +1268,18 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         if (entry && entry.status === AuctionStatus.OPEN) {
           // A mensagem citada já identificou o item: consome o "qual item?".
           pendingBidContextStore.deleteContext(list.tenantId, list.groupId, context.senderId);
+          pendingBidConfirmationStore.delete(list.tenantId, list.groupId, context.senderId);
+          await this.auditBid(list, context, {
+            decision: 'register',
+            confidence: 0.97,
+            matchedBy: 'reply_context',
+            source,
+            reason: 'Item identificado pela mensagem citada (Responder).',
+            parsed: null,
+            text,
+            input,
+            messageId: input?.messageId ?? message.id?._serialized ?? null,
+          });
           try {
             await this.placeBidEntry(list, context, message, entry, amount);
             return;
@@ -1240,7 +1299,7 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     // Fluxo normal (sem reply context ou não aplicável)
     const list = this.listGroups.get(context.groupId);
     if (list) {
-      await this.handleListBid(context, list, message, text, replyContext);
+      await this.handleListBid(context, list, message, text, replyContext, input);
       return;
     }
 
@@ -1259,15 +1318,17 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
   /**
    * Processa lances no modo lista.
    *
-   * 1. Se há um contexto pendente ("qual item?"), interpreta a resposta como
-   *    o Nº do item e usa o valor guardado.
-   * 2. Caso contrário, usa o interpretador determinístico (list-bid.parser):
-   *    - confiança alta + item único → registra o lance;
-   *    - item ambíguo → pergunta qual é (contexto pendente, expira em 2 min);
-   *    - valor sem item → pergunta qual é;
-   *    - mensagem que não parece lance → ignora silenciosamente.
-   * 3. Se o participante usou o "Responder" e o texto só tem o valor
-   *    ("46 reais", "dou 46"), o item vem da mensagem citada.
+   * 1. Resposta a uma confirmação pendente ("sim"/"não"/"não, era 180").
+   * 2. Resposta ao "qual item?" (contexto pendente).
+   * 3. Interpretador determinístico (list-bid.parser) + Confidence Engine:
+   *    - ALTA confiança → registra o lance;
+   *    - confiança intermediária → pede confirmação (expira em 2 min, só o autor);
+   *    - ambiguidade → pergunta qual item (nunca escolhe por conta própria);
+   *    - Nº/formato inválidos → orienta;
+   *    - conversa normal → ignora em silêncio.
+   * 4. "Responder": o item vem da mensagem citada quando o texto só tem valor.
+   *
+   * Toda decisão passa pelo `evaluateBidConfidence` e é auditada em `Log`.
    */
   private async handleListBid(
     context: WhatsAppGroupContext,
@@ -1275,17 +1336,29 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     message: Message,
     text: string,
     replyContext?: ReplyContext,
+    input?: BidMessageInput,
   ): Promise<void> {
+    const source: BidSource = input?.source ?? 'TEXT';
+    const senderKey = { tenantId: list.tenantId, groupId: list.groupId, senderId: context.senderId };
+
+    // --- 1) Confirmação pendente ---
+    if (await this.handlePendingConfirmation(context, list, message, text, source)) {
+      return;
+    }
+
     const snapshot = await this.listAuctionSnapshot(list);
 
-    // --- 1) Contexto pendente: participante respondendo "qual item?" ---
+    // --- 2) Contexto pendente: participante respondendo "qual item?" ---
     const pending = pendingBidContextStore.getContext(
       list.tenantId,
       list.groupId,
       context.senderId,
     );
-    if (pending && /^\s*\d{1,4}\s*$/.test(text)) {
-      const answer = parseInt(text.trim(), 10);
+    // Em áudio o participante pode dizer "a número um": força a conversão dos
+    // números falados e remove rótulos ("número", "item") para sobrar só o Nº.
+    const pendingAnswer = source === 'AUDIO' ? this.audioItemAnswer(text) : text;
+    if (pending && /^\s*\d{1,4}\s*$/.test(pendingAnswer)) {
+      const answer = parseInt(pendingAnswer.trim(), 10);
       const entry = snapshot.find((e) => e.number === answer);
       if (entry && entry.status === AuctionStatus.OPEN) {
         pendingBidContextStore.deleteContext(list.tenantId, list.groupId, context.senderId);
@@ -1304,18 +1377,23 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
       // Nº inexistente: segue o fluxo normal (pode ser um novo valor).
     }
 
-    // --- 2) Interpretador determinístico ---
+    // --- 3) Interpretador determinístico ---
     const parser = createParser(
-      snapshot.map((e) => ({ id: e.auctionId, name: e.name, order: e.number })),
+      snapshot.map((e) => ({
+        id: e.auctionId,
+        name: e.name,
+        order: e.number,
+        aliases: e.aliases ?? [],
+      })),
     );
     const parsed = parser.parseMessage(text);
     const looksLikeBid =
       /^\s*(?:r\$|\$|[\d.,])/i.test(text) || isValueOnlyAfterFillers(text);
-    const senderKey = { tenantId: list.tenantId, groupId: list.groupId, senderId: context.senderId };
 
     // a) Responder do WhatsApp: valor no texto, item só na mensagem citada
     // ("46 reais", "dou 46"). Só quando o texto não citou outro item (nem nº,
     // nem nome/candidatos) — o que está escrito sempre vence o citado.
+    let replyEntry: ListAuctionEntry | null = null;
     if (
       replyContext &&
       parsed.amount !== null &&
@@ -1326,122 +1404,539 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     ) {
       const entry = snapshot.find((e) => e.auctionId === replyContext.auctionId);
       if (entry && entry.status === AuctionStatus.OPEN) {
-        pendingBidContextStore.deleteContext(
-          senderKey.tenantId,
-          senderKey.groupId,
-          senderKey.senderId,
-        );
-        try {
-          await this.placeBidEntry(list, context, message, entry, parsed.amount);
-        } catch (error) {
-          await this.reply(context, this.friendlyError(error));
-        }
-        return;
-      }
-      if (entry) {
+        replyEntry = entry;
+      } else if (entry) {
         await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
         return;
       }
       // Item saiu da lista → segue o fluxo normal (vai perguntar qual item).
     }
 
-    // b) Valor + item com confiança alta → registra o lance.
+    // --- Responder + variação: dois contextos fortes para itens diferentes ---
+    // A variação é evidência forte, mas não sobrescreve a mensagem citada
+    // (reply): quando apontam para itens distintos, o motor pergunta qual
+    // item em vez de escolher.
     if (
-      parsed.amount !== null &&
-      parsed.amount > 0 &&
-      parsed.itemId &&
-      !parsed.ambiguous &&
-      parsed.confidence >= 0.85
+      replyContext &&
+      parsed.matchedBy === 'item_alias' &&
+      parsed.itemId !== null &&
+      parsed.itemId !== replyContext.auctionId &&
+      !parsed.ambiguous
     ) {
-      const entry = snapshot.find((e) => e.auctionId === parsed.itemId);
-      if (!entry) {
-        await this.reply(context, 'ℹ️ Item não encontrado na lista.');
+      const aliasEntry = snapshot.find((e) => e.auctionId === parsed.itemId);
+      const quotedEntry = snapshot.find((e) => e.auctionId === replyContext.auctionId);
+      if (aliasEntry && quotedEntry && quotedEntry.status === AuctionStatus.OPEN) {
+        parsed.ambiguous = true;
+        parsed.candidates = [
+          { item: aliasEntry, score: 0.96 },
+          { item: quotedEntry, score: 0.97 },
+        ].map(({ item, score }) => ({
+          itemNumber: item.number,
+          itemName: item.name,
+          normalizedName: normalizeMessage(item.name),
+          score,
+        }));
+        parsed.needsUserInput = true;
+        parsed.reason =
+          `Variação "${parsed.matchedText}" (${aliasEntry.name}) conflita com a ` +
+          `mensagem citada (${quotedEntry.name}); participante deve escolher.`;
+      }
+    }
+
+    // c) Contexto de disputa ativa: valor sem item, mas o item está em briga
+    //    recente neste grupo (ex.: "160" no Bolo → "165" sem repetir o nome).
+    //    Só entra quando NENHUM outro contexto se aplicou: item explícito,
+    //    mensagem citada e "qual item?" pendente sempre vencem.
+    const activeSignal =
+      replyEntry === null ? this.collectActiveContextSignal(list, snapshot, parsed) : null;
+    const activeEntry =
+      activeSignal && activeSignal.candidates.length === 1
+        ? snapshot.find((e) => e.auctionId === activeSignal.candidates[0].auctionId)
+        : undefined;
+
+    // b) Confidence Engine: uma função pura decide, o motor executa.
+    const transcriptionQuality = input?.transcriptionQuality ?? null;
+    const assessment = applyTranscriptionQuality(
+      evaluateBidConfidence({
+        parsed,
+        source,
+        replyContextUsed: replyEntry !== null,
+        looksLikeBid,
+        transcriptionQuality,
+        activeContext: activeSignal,
+      }),
+      transcriptionQuality,
+    );
+
+    await this.auditBid(list, context, {
+      decision: assessment.decision,
+      confidence: assessment.confidence,
+      matchedBy: assessment.matchedBy,
+      source: assessment.source,
+      reason: assessment.reason,
+      parsed,
+      text,
+      input,
+      messageId: input?.messageId ?? message.id?._serialized ?? null,
+      itemId: activeEntry?.auctionId ?? null,
+      itemName: activeEntry?.name ?? null,
+      lastContextBidId: activeSignal?.candidates[0]?.lastBidId ?? null,
+    });
+
+    switch (assessment.decision) {
+      // --- ALTA confiança → registra ---
+      case 'register': {
+        const entry =
+          replyEntry ??
+          activeEntry ??
+          (parsed.itemId ? snapshot.find((e) => e.auctionId === parsed.itemId) : undefined);
+        const amount = parsed.amount;
+        if (!entry || amount === null || amount <= 0) {
+          await this.reply(context, 'ℹ️ Item não encontrado na lista.');
+          return;
+        }
+        if (entry.status !== AuctionStatus.OPEN) {
+          await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
+          return;
+        }
+        try {
+          await this.placeBidEntry(list, context, message, entry, amount);
+          pendingBidContextStore.deleteContext(
+            senderKey.tenantId,
+            senderKey.groupId,
+            senderKey.senderId,
+          );
+          pendingBidConfirmationStore.delete(
+            senderKey.tenantId,
+            senderKey.groupId,
+            senderKey.senderId,
+          );
+        } catch (error) {
+          await this.reply(context, this.friendlyError(error));
+        }
         return;
       }
-      if (entry.status !== AuctionStatus.OPEN) {
-        await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
-        return;
-      }
-      try {
-        await this.placeBidEntry(list, context, message, entry, parsed.amount);
+
+      // --- CONFIANÇA intermediária → mostra o que entendeu e espera "sim" ---
+      case 'confirm': {
+        const amount = parsed.amount;
+        const entry =
+          replyEntry ??
+          activeEntry ??
+          (parsed.itemId ? snapshot.find((e) => e.auctionId === parsed.itemId) : undefined);
+        if (!entry || amount === null || amount <= 0) {
+          await this.reply(context, 'ℹ️ Item não encontrado na lista.');
+          return;
+        }
+        if (entry.status !== AuctionStatus.OPEN) {
+          await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
+          return;
+        }
+        const confirmation = pendingBidConfirmationStore.create({
+          tenantId: senderKey.tenantId,
+          groupId: senderKey.groupId,
+          userId: senderKey.senderId,
+          auctionId: entry.auctionId,
+          itemId: entry.itemId,
+          itemName: entry.name,
+          itemNumber: entry.number,
+          amount,
+          matchedBy: assessment.matchedBy,
+          source,
+          transcription: input?.transcription ?? input?.text ?? null,
+          messageId: input?.messageId ?? message.id?._serialized ?? null,
+        });
         pendingBidContextStore.deleteContext(
           senderKey.tenantId,
           senderKey.groupId,
           senderKey.senderId,
         );
-      } catch (error) {
-        await this.reply(context, this.friendlyError(error));
+        await this.reply(context, confirmationQuestion(confirmation));
+        return;
       }
-      return;
-    }
 
-    // c) Nº de item que não existe ("99 300")
-    if (parsed.amount !== null && parsed.amount > 0 && parsed.itemNumber !== null && !parsed.itemId) {
-      await this.reply(
-        context,
-        `ℹ️ Item *${parsed.itemNumber}* não encontrado na lista. Envie o Nº + valor (ex.: 01 300).`,
-      );
-      return;
-    }
-
-    // d) Valor ok mas item ambíguo → pergunta qual é (nunca adivinha).
-    if (parsed.amount !== null && parsed.amount > 0 && parsed.ambiguous && parsed.candidates.length > 0) {
-      pendingBidContextStore.createContext(
-        senderKey.tenantId,
-        senderKey.groupId,
-        senderKey.senderId,
-        parsed.amount,
-        parsed.candidates.map((c) => ({
-          itemNumber: c.itemNumber,
-          itemName: c.itemName,
-          normalizedName: c.normalizedName,
-        })),
-      );
-      await this.reply(context, this.ambiguousQuestion(parsed.amount, parsed.candidates.map((c) => ({
-        number: c.itemNumber,
-        name: c.itemName,
-      }))));
-      return;
-    }
-
-    // e) Valor identificado sem item e a mensagem parece lance → qual item?
-    if (parsed.amount !== null && parsed.amount > 0 && looksLikeBid) {
-      const open = snapshot.filter((e) => e.status === AuctionStatus.OPEN);
-      if (open.length > 0 && open.length <= 10) {
-        pendingBidContextStore.createContext(
+      // --- AMBIGUIDADE → pergunta qual item (nunca adivinha) ---
+      case 'clarify': {
+        const amount = parsed.amount ?? 0;
+        pendingBidConfirmationStore.delete(
           senderKey.tenantId,
           senderKey.groupId,
           senderKey.senderId,
-          parsed.amount,
-          open.map((e) => ({
-            itemNumber: e.number,
-            itemName: e.name,
-            normalizedName: e.name.toLowerCase(),
-          })),
         );
-        await this.reply(context, this.ambiguousQuestion(parsed.amount, open.map((e) => ({
-          number: e.number,
-          name: e.name,
-        }))));
+
+        if (parsed.candidates.length > 0) {
+          pendingBidContextStore.createContext(
+            senderKey.tenantId,
+            senderKey.groupId,
+            senderKey.senderId,
+            amount,
+            parsed.candidates.map((c) => ({
+              itemNumber: c.itemNumber,
+              itemName: c.itemName,
+              normalizedName: c.normalizedName,
+            })),
+          );
+          await this.reply(
+            context,
+            this.ambiguousQuestion(
+              amount,
+              parsed.candidates.map((c) => ({ number: c.itemNumber, name: c.itemName })),
+            ),
+          );
+          return;
+        }
+
+        // Ambiguidade vinda dos contextos de disputa ativa (vários itens em
+        // briga recente): oferece SÓ esses itens, não a lista inteira.
+        const contextOptions = assessment.clarifyOptions ?? [];
+        if (contextOptions.length > 0) {
+          pendingBidContextStore.createContext(
+            senderKey.tenantId,
+            senderKey.groupId,
+            senderKey.senderId,
+            amount,
+            contextOptions.map((option) => ({
+              itemNumber: option.itemNumber,
+              itemName: option.itemName,
+              normalizedName: option.itemName.toLowerCase(),
+            })),
+          );
+          await this.reply(
+            context,
+            this.ambiguousQuestion(
+              amount,
+              contextOptions.map((option) => ({ number: option.itemNumber, name: option.itemName })),
+            ),
+          );
+          return;
+        }
+
+        const open = snapshot.filter((e) => e.status === AuctionStatus.OPEN);
+        if (open.length > 0 && open.length <= 10) {
+          pendingBidContextStore.createContext(
+            senderKey.tenantId,
+            senderKey.groupId,
+            senderKey.senderId,
+            amount,
+            open.map((e) => ({
+              itemNumber: e.number,
+              itemName: e.name,
+              normalizedName: e.name.toLowerCase(),
+            })),
+          );
+          await this.reply(
+            context,
+            this.ambiguousQuestion(
+              amount,
+              open.map((e) => ({ number: e.number, name: e.name })),
+            ),
+          );
+          return;
+        }
+        await this.reply(
+          context,
+          'ℹ️ Aqui é um leilão de *lista*: o lance precisa do *Nº do item*.\nEnvie o formato: *01 300* (Nº do item + valor).',
+        );
         return;
       }
+
+      // --- Orientações ---
+      case 'orient_number':
+        await this.reply(
+          context,
+          `ℹ️ Item *${parsed.itemNumber}* não encontrado na lista. Envie o Nº + valor (ex.: 01 300).`,
+        );
+        return;
+
+      case 'orient_format':
+        await this.reply(
+          context,
+          'ℹ️ Formato de lance não reconhecido.\nEnvie: *01 300* (Nº do item + valor).',
+        );
+        return;
+
+      // --- Conversa normal: silêncio absoluto ---
+      case 'ignore':
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Coleta os sinais do contexto de disputa ativa dos itens.
+   *
+   * Retorna `null` quando não há sinal utilizável: a mensagem já trouxe o
+   * item, não existe contexto vivo, ou o item/leilão do contexto saiu de
+   * disputa. Nunca escolhe um item — só informa quem está em disputa.
+   */
+  private collectActiveContextSignal(
+    list: ActiveListMemory,
+    snapshot: ListAuctionEntry[],
+    parsed: ParsedBidResult,
+  ): ActiveBidContextSignal | null {
+    // Item explícito no texto vence qualquer contexto (e candidatos/ambiguidade).
+    if (parsed.itemId !== null || parsed.itemNumber !== null) return null;
+    if (parsed.ambiguous || parsed.candidates.length > 0) return null;
+
+    const amount = parsed.amount;
+    if (amount === null || amount <= 0) return null;
+
+    const contexts = activeBidContextStore.list(list.tenantId, list.groupId);
+    if (contexts.length === 0) return null;
+
+    const byAuction = new Map(snapshot.map((e) => [e.auctionId, e]));
+    const candidates: ActiveBidContextCandidate[] = [];
+    let blockedByValue = 0;
+    let newest = 0;
+
+    for (const ctx of contexts) {
+      const entry = byAuction.get(ctx.auctionId);
+      const outOfDispute =
+        !entry ||
+        entry.status !== AuctionStatus.OPEN ||
+        (ctx.itemId !== null && entry.itemId !== null && ctx.itemId !== entry.itemId);
+
+      if (outOfDispute) {
+        // Leilão encerrado / item fora da lista: contexto deixa de valer.
+        activeBidContextStore.markClosed(list.tenantId, list.groupId, ctx.auctionId, ctx.itemId);
+        continue;
+      }
+
+      // Piso do lance: o banco (líder atual) manda; o contexto cobre a memória.
+      const floor = Math.max(entry.currentAmount ?? 0, ctx.lastBidAmount);
+      if (!(amount > floor)) {
+        blockedByValue++;
+        continue;
+      }
+
+      candidates.push({
+        auctionId: ctx.auctionId,
+        itemId: ctx.itemId,
+        itemNumber: ctx.itemNumber,
+        itemName: ctx.itemName,
+        lastBidAmount: ctx.lastBidAmount,
+        lastBidAt: ctx.lastBidAt,
+        lastBidId: ctx.lastBidId,
+      });
+      if (ctx.lastBidAt > newest) newest = ctx.lastBidAt;
+    }
+
+    if (candidates.length === 0) return null;
+
+    return {
+      candidates,
+      blockedByValue,
+      totalActive: candidates.length + blockedByValue,
+      newestAgeMs: Math.max(0, Date.now() - newest),
+    };
+  }
+
+  /**
+   * Normaliza a resposta a um "qual item?" dita em áudio.
+   * "a número um" → "1", "um" → "1", "item 2" → "2".
+   * Se não sobrar um Nº de item, devolve o texto para o fluxo normal.
+   */
+  private audioItemAnswer(text: string): string {
+    const spelled = spokenNumbersToDigits(text, { force: true });
+    const stripped = spelled
+      .replace(/^(?:o|a|os|as)?\s*(?:n(?:[uú]mero|º|\.)?|item)?\s*/i, '')
+      .trim();
+    return stripped || spelled;
+  }
+
+  /**
+   * Responde a uma confirmação pendente ("sim", "não", "não, era 180").
+   * @returns true quando a mensagem foi consumida por este fluxo.
+   */
+  private async handlePendingConfirmation(
+    context: WhatsAppGroupContext,
+    list: ActiveListMemory,
+    message: Message,
+    text: string,
+    source: BidSource,
+  ): Promise<boolean> {
+    const peek = pendingBidConfirmationStore.peek(
+      list.tenantId,
+      list.groupId,
+      context.senderId,
+    );
+    if (peek.state === 'none') return false;
+
+    const response = parseConfirmationResponse(text);
+
+    if (!response) {
+      // Não é resposta à confirmação. Uma pendente segue valendo (um novo lance
+      // no fluxo normal a substitui); uma expirada sai do caminho sem ruído.
+      if (peek.state === 'expired') {
+        pendingBidConfirmationStore.delete(list.tenantId, list.groupId, context.senderId);
+      }
+      return false;
+    }
+
+    if (peek.state === 'expired') {
+      pendingBidConfirmationStore.delete(list.tenantId, list.groupId, context.senderId);
       await this.reply(
         context,
-        'ℹ️ Aqui é um leilão de *lista*: o lance precisa do *Nº do item*.\nEnvie o formato: *01 300* (Nº do item + valor).',
+        `⏰ A confirmação expirou e o lance de *${formatCurrency(peek.confirmation.amount)}* não foi registrado.\nEnvie o lance de novo (ex.: *01 300*).`,
+      );
+      return true;
+    }
+
+    const confirmation =
+      pendingBidConfirmationStore.take(list.tenantId, list.groupId, context.senderId) ??
+      peek.confirmation;
+
+    if (response.kind === 'reject') {
+      await this.auditBid(list, context, {
+        decision: 'reject',
+        confidence: 0,
+        matchedBy: confirmation.matchedBy,
+        source,
+        reason: 'Participante cancelou a confirmação pendente.',
+        parsed: null,
+        text,
+        messageId: message.id?._serialized ?? null,
+      });
+      await this.reply(context, '❌ Lance cancelado.');
+      return true;
+    }
+
+    if (response.kind === 'correction') {
+      // Correção de valor ("não, era 180") → novo valor, mesma pergunta.
+      const updated = pendingBidConfirmationStore.create({
+        tenantId: confirmation.tenantId,
+        groupId: confirmation.groupId,
+        userId: confirmation.userId,
+        auctionId: confirmation.auctionId,
+        itemId: confirmation.itemId,
+        itemName: confirmation.itemName,
+        itemNumber: confirmation.itemNumber,
+        amount: response.amount,
+        matchedBy: confirmation.matchedBy,
+        source,
+        transcription: confirmation.transcription,
+        messageId: confirmation.messageId,
+      });
+      await this.reply(context, confirmationQuestion(updated));
+      return true;
+    }
+
+    await this.registerConfirmedBid(list, context, message, confirmation, text, source);
+    return true;
+  }
+
+  /** Registra um lance que o participante acabou de confirmar. */
+  private async registerConfirmedBid(
+    list: ActiveListMemory,
+    context: WhatsAppGroupContext,
+    message: Message,
+    confirmation: PendingBidConfirmation,
+    text: string,
+    source: BidSource,
+  ): Promise<void> {
+    const snapshot = await this.listAuctionSnapshot(list);
+    const entry = snapshot.find((e) => e.auctionId === confirmation.auctionId);
+
+    if (!entry) {
+      await this.reply(
+        context,
+        'ℹ️ A lista de leilão não está mais ativa neste grupo; o lance não foi registrado.',
       );
       return;
     }
-
-    // f) Começa com número mas está malformada → orienta.
-    if (/^\s*\d/.test(text)) {
-      await this.reply(
-        context,
-        'ℹ️ Formato de lance não reconhecido.\nEnvie: *01 300* (Nº do item + valor).',
-      );
+    if (entry.status !== AuctionStatus.OPEN) {
+      await this.reply(context, `✅ O item *${entry.name}* já foi encerrado.`);
       return;
     }
 
-    // g) Texto que não se parece com lance (conversa normal) → ignora.
+    try {
+      await this.placeBidEntry(list, context, message, entry, confirmation.amount);
+      pendingBidContextStore.deleteContext(list.tenantId, list.groupId, confirmation.userId);
+      await this.auditBid(list, context, {
+        decision: 'register',
+        confidence: 0.95,
+        matchedBy: confirmation.matchedBy,
+        source,
+        reason: 'Confirmação aceita pelo participante.',
+        parsed: null,
+        text,
+        messageId: confirmation.messageId ?? message.id?._serialized ?? null,
+        amount: confirmation.amount,
+        itemId: entry.auctionId,
+        itemName: entry.name,
+      });
+      await this.reply(
+        context,
+        `✅ Lance registrado: *${formatCurrency(confirmation.amount)}* • *${String(entry.number).padStart(2, '0')} ${entry.name}*`,
+      );
+    } catch (error) {
+      await this.reply(context, this.friendlyError(error));
+    }
+  }
+
+  /**
+   * Grava a decisão de interpretação na tabela `Log` (auditoria).
+   *
+   * Nunca lança: auditoria não pode derrubar o fluxo de um lance. Mensagens
+   * `ignore` (conversa comum) não geram registro para não poluir a tabela.
+   */
+  private async auditBid(
+    list: ActiveListMemory,
+    context: WhatsAppGroupContext,
+    data: {
+      decision: string;
+      confidence: number;
+      matchedBy: string;
+      source: BidSource;
+      reason: string;
+      parsed: ParsedBidResult | null;
+      text: string;
+      input?: BidMessageInput;
+      messageId?: string | null;
+      amount?: number;
+      itemId?: string | null;
+      itemName?: string | null;
+      /** Lance que originou o contexto de disputa usado nesta interpretação. */
+      lastContextBidId?: string | null;
+    },
+  ): Promise<void> {
+    if (data.decision === 'ignore') return;
+    try {
+      await this.prisma.log?.create?.({
+        data: {
+          tenantId: list.tenantId,
+          level: LogLevel.INFO,
+          message: `Lance interpretado: ${data.decision}`,
+          context: 'bid-interpretation',
+          metadata: {
+            groupId: context.groupId,
+            senderId: context.senderId,
+            messageId: data.messageId ?? data.input?.messageId ?? null,
+            decision: data.decision,
+            result: auditResult(data.decision),
+            confidence: data.confidence,
+            matchedBy: data.matchedBy,
+            source: data.source,
+            reason: data.reason,
+            amount: data.parsed?.amount ?? data.amount ?? null,
+            itemNumber: data.parsed?.itemNumber ?? null,
+            itemId: data.parsed?.itemId ?? data.itemId ?? null,
+            itemName: data.parsed?.itemName ?? data.itemName ?? null,
+            matchCoverage: data.parsed?.matchCoverage ?? null,
+            matchedText: data.parsed?.matchedText ?? null,
+            ambiguous: data.parsed?.ambiguous ?? null,
+            candidates: data.parsed?.candidates.map((c) => c.itemNumber) ?? [],
+            lastContextBidId: data.lastContextBidId ?? null,
+            message: data.text.slice(0, 200),
+            originalMessage: data.parsed?.originalMessage?.slice(0, 200) ?? data.text.slice(0, 200),
+            normalizedMessage: data.parsed?.normalizedMessage?.slice(0, 200) ?? null,
+            transcription: data.input?.transcription?.slice(0, 200) ?? null,
+          },
+        },
+      });
+    } catch (error) {
+      this.logger.warn(`Falha ao auditar interpretação de lance: ${(error as Error).message}`);
+    }
   }
 
   /** Registra um lance em um item da lista e confirma com reação ✅. */
@@ -1452,11 +1947,30 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
     entry: ListAuctionEntry,
     amount: number,
   ): Promise<void> {
-    await this.auctionsService.placeBid(list.tenantId, {
+    const result = await this.auctionsService.placeBid(list.tenantId, {
       auctionId: entry.auctionId,
       amount,
       participantPhone: context.senderId.split('@')[0],
       participantName: context.senderName ?? undefined,
+    });
+
+    const participantMessageId = message.id?._serialized ?? null;
+
+    // Contexto de disputa ativa: nasce/atualiza APENAS depois que o lance foi
+    // efetivamente registrado (banco já validou e ordenou a concorrência).
+    // Mensagem inválida, em confirmação ou ambígua nunca toca este contexto.
+    activeBidContextStore.record({
+      tenantId: list.tenantId,
+      groupId: context.groupId,
+      auctionId: entry.auctionId,
+      itemId: entry.itemId,
+      itemNumber: entry.number,
+      itemName: entry.name,
+      lastBidId: result?.bid?.id ?? null,
+      lastBidAmount: amount,
+      lastBidUserId: context.senderId,
+      lastBidAt: Date.now(),
+      lastBidMessageId: participantMessageId,
     });
 
     // Confirma sem poluir o chat: apenas reage à mensagem do participante.
@@ -1465,7 +1979,6 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
 
     // Vincula a MENSAGEM do participante ao item: quem responder esse lance
     // ("Responder"/swipe) com apenas o valor herda o mesmo item.
-    const participantMessageId = message.id?._serialized;
     if (participantMessageId) {
       this.registerReplyContext(
         participantMessageId,
@@ -1650,7 +2163,20 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         durationSeconds: true,
         cardSentAt: true,
         item: {
-          select: { order: true, initialValue: true, imageUrl: true, number: true, description: true },
+          select: {
+            order: true,
+            initialValue: true,
+            imageUrl: true,
+            number: true,
+            description: true,
+            // Variações ATIVAS do item (sinônimos cadastrados no painel) —
+            // só ativas participam da interpretação do lance.
+            aliases: {
+              where: { active: true },
+              orderBy: { createdAt: 'asc' },
+              select: { normalizedValue: true },
+            },
+          },
         },
         bids: {
           where: { isCurrentLeader: true },
@@ -1686,6 +2212,10 @@ export class AuctionEngine implements OnModuleInit, OnModuleDestroy {
         endsAt: auction.endsAt ?? new Date(),
         durationSeconds: auction.durationSeconds,
         cardSentAt: auction.cardSentAt ?? null,
+        aliases:
+          auction.item?.aliases
+            ?.map((a) => (typeof a?.normalizedValue === 'string' ? a.normalizedValue : ''))
+            .filter((v) => v.length > 0) ?? [],
       };
     });
   }

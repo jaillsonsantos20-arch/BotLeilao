@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Auction, Item, ItemStatus, Prisma, Role, SessionStatus } from '@prisma/client';
+import { Auction, Item, ItemAlias, ItemStatus, Prisma, Role, SessionStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { buildPaginatedResult, PaginatedResult } from '../../common/dto/pagination.dto';
 import { PrismaService } from '../../common/database/prisma.service';
@@ -13,8 +13,15 @@ import { PlanLimitsService } from '../../common/services/plan-limits.service';
 import { AuctionEventsService } from '../auction-events/auction-events.service';
 import { AuctionsService } from '../auctions/auctions.service';
 import { AuctionEngine } from '../whatsapp/auction.engine';
+import { normalizeMessage } from '../whatsapp/list-bid.parser';
 import { WhatsAppClientManager } from '../whatsapp/whatsapp-client.manager';
-import { CreateItemDto, StartItemAuctionDto } from './dto/item.dto';
+import {
+  CreateItemAliasDto,
+  CreateItemDto,
+  ITEM_ALIAS_MAX_PER_ITEM,
+  StartItemAuctionDto,
+  UpdateItemAliasDto,
+} from './dto/item.dto';
 
 /**
  * Cadastro de itens para leilão.
@@ -97,6 +104,10 @@ export class ItemsService {
       order = dto.order ?? maxOrder + 1;
     }
 
+    // Variações (sinônimos) do item: valida tudo ANTES de criar o item para
+    // não deixar o cadastro pela metade (item novo ainda não tem variação).
+    const aliasValues = this.prepareAliasPayload(dto.aliases ?? []);
+
     let created: Item;
     try {
       created = await this.prisma.item.create({
@@ -122,6 +133,29 @@ export class ItemsService {
       throw error;
     }
 
+    if (aliasValues.length > 0) {
+      try {
+        await this.prisma.itemAlias.createMany({
+          data: aliasValues.map((a) => ({
+            tenantId,
+            itemId: created.id,
+            value: a.value,
+            normalizedValue: a.normalized,
+          })),
+        });
+      } catch (error) {
+        this.logger.error(
+          `Item ${created.id} criado, mas falhou ao salvar as variações: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        // Ainda não foi publicado no WhatsApp: desfaz para não deixar o
+        // cadastro pela metade (sem as variações que o usuário pediu).
+        await this.prisma.item.delete({ where: { id: created.id } }).catch(() => undefined);
+        throw new BadRequestException('Não foi possível salvar as variações do item.');
+      }
+    }
+
     // Lista EM ANDAMENTO: publica somente este item no grupo na hora (card com
     // foto/texto + vínculo p/ lance via "Responder"). Se a lista ainda não foi
     // iniciada, o motor não faz nada e o item sai no início normal. Falha de
@@ -144,7 +178,7 @@ export class ItemsService {
   async list(
     tenantId: string,
     params: { page?: number; limit?: number; auctionEventId?: string },
-  ): Promise<PaginatedResult<Item & { auctionCount: number }>> {
+  ): Promise<PaginatedResult<Item & { auctionCount: number; aliases: ItemAlias[] }>> {
     const page = params.page ?? 1;
     const limit = params.limit ?? 20;
 
@@ -156,7 +190,12 @@ export class ItemsService {
     const [data, total] = await this.prisma.$transaction([
       this.prisma.item.findMany({
         where,
-        include: { _count: { select: { auctions: true } } },
+        include: {
+          _count: { select: { auctions: true } },
+          // Painel precisa de TODAS as variações (inclusive inativas, para
+          // reativar); o motor consome só as ativas.
+          aliases: { orderBy: { createdAt: 'asc' } },
+        },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
@@ -172,9 +211,10 @@ export class ItemsService {
     return buildPaginatedResult(enriched, total, page, limit);
   }
 
-  async findById(tenantId: string, itemId: string): Promise<Item> {
+  async findById(tenantId: string, itemId: string): Promise<Item & { aliases: ItemAlias[] }> {
     const item = await this.prisma.item.findFirst({
       where: { id: itemId, tenantId },
+      include: { aliases: { orderBy: { createdAt: 'asc' } } },
     });
     if (!item) {
       throw new NotFoundException('Item não encontrado.');
@@ -336,5 +376,181 @@ export class ItemsService {
     });
 
     return auction;
+  }
+
+  // ---------------------------------------------------------------------
+  // Variações / sinônimos do item ("boi", "gado" → item "Garrote")
+  // ---------------------------------------------------------------------
+
+  /** Lista TODAS as variações do item (inclusive inativas, p/ reativar). */
+  async listAliases(tenantId: string, itemId: string): Promise<ItemAlias[]> {
+    await this.findById(tenantId, itemId);
+    return this.prisma.itemAlias.findMany({
+      where: { itemId, tenantId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async createAlias(
+    tenantId: string,
+    itemId: string,
+    dto: CreateItemAliasDto,
+  ): Promise<ItemAlias> {
+    const item = await this.findById(tenantId, itemId);
+    const { value, normalized } = this.normalizeAlias(dto.value);
+
+    const existing = await this.prisma.itemAlias.findFirst({
+      where: { itemId: item.id, normalizedValue: normalized },
+      select: { id: true, active: true },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        existing.active
+          ? 'Este item já tem uma variação com esse texto.'
+          : 'Este item já tem essa variação, mas está inativada. Reative-a em vez de criar outra.',
+      );
+    }
+
+    const total = await this.prisma.itemAlias.count({ where: { itemId: item.id } });
+    if (total >= ITEM_ALIAS_MAX_PER_ITEM) {
+      throw new BadRequestException(
+        `Máximo de ${ITEM_ALIAS_MAX_PER_ITEM} variações por item.`,
+      );
+    }
+
+    try {
+      return await this.prisma.itemAlias.create({
+        data: {
+          tenantId: item.tenantId,
+          itemId: item.id,
+          value,
+          normalizedValue: normalized,
+        },
+      });
+    } catch (error) {
+      if (this.isAliasUniqueViolation(error)) {
+        throw new BadRequestException('Este item já tem uma variação com esse texto.');
+      }
+      throw error;
+    }
+  }
+
+  async updateAlias(
+    tenantId: string,
+    itemId: string,
+    aliasId: string,
+    dto: UpdateItemAliasDto,
+  ): Promise<ItemAlias> {
+    const item = await this.findById(tenantId, itemId);
+    const alias = await this.findAliasOrThrow(tenantId, item.id, aliasId);
+
+    const data: Prisma.ItemAliasUpdateInput = {};
+    if (dto.value !== undefined) {
+      const { value, normalized } = this.normalizeAlias(dto.value);
+      if (normalized !== alias.normalizedValue) {
+        const clash = await this.prisma.itemAlias.findFirst({
+          where: {
+            itemId: item.id,
+            normalizedValue: normalized,
+            id: { not: alias.id },
+          },
+          select: { id: true },
+        });
+        if (clash) {
+          throw new BadRequestException('Este item já tem uma variação com esse texto.');
+        }
+      }
+      data.value = value;
+      data.normalizedValue = normalized;
+    }
+    if (dto.active !== undefined) {
+      data.active = dto.active;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return alias;
+    }
+
+    try {
+      return await this.prisma.itemAlias.update({ where: { id: alias.id }, data });
+    } catch (error) {
+      if (this.isAliasUniqueViolation(error)) {
+        throw new BadRequestException('Este item já tem uma variação com esse texto.');
+      }
+      throw error;
+    }
+  }
+
+  async removeAlias(tenantId: string, itemId: string, aliasId: string): Promise<void> {
+    const item = await this.findById(tenantId, itemId);
+    const alias = await this.findAliasOrThrow(tenantId, item.id, aliasId);
+    await this.prisma.itemAlias.delete({ where: { id: alias.id } });
+  }
+
+  private async findAliasOrThrow(tenantId: string, itemId: string, aliasId: string): Promise<ItemAlias> {
+    const alias = await this.prisma.itemAlias.findFirst({
+      where: { id: aliasId, itemId, tenantId },
+    });
+    if (!alias) {
+      throw new NotFoundException('Variação não encontrada.');
+    }
+    return alias;
+  }
+
+  /**
+   * Valida e normaliza uma variação enviada pelo painel. A normalização é a
+   * MESMA usada na interpretação do lance (§5): minúsculas, sem acentos e
+   * espaços colapsados — assim "Bói" e "boi" são a mesma variação.
+   */
+  private normalizeAlias(raw: string): { value: string; normalized: string } {
+    const value = String(raw ?? '').trim().replace(/\s+/g, ' ');
+    if (value.length < 1 || value.length > 60) {
+      throw new BadRequestException('A variação deve ter entre 1 e 60 caracteres.');
+    }
+    const normalized = normalizeMessage(value)
+      // Pontuação só nas bordas ("boi!" → "boi"): o participante pode escrever
+      // com vírgula/ponto e a variação precisa continuar casando.
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) {
+      throw new BadRequestException('A variação não pode ficar vazia.');
+    }
+    // Variação só numérica competiria com o nº do item (que tem prioridade
+    // absoluta) e só geraria confusão.
+    if (/^\d[\d.,\s]*$/.test(normalized)) {
+      throw new BadRequestException(
+        'A variação não pode ser apenas números: use o Nº do item para identificar o lote.',
+      );
+    }
+    return { value, normalized };
+  }
+
+  /** Valida as variações enviadas junto com a criação do item. */
+  private prepareAliasPayload(values: string[]): { value: string; normalized: string }[] {
+    if (values.length > ITEM_ALIAS_MAX_PER_ITEM) {
+      throw new BadRequestException(`Máximo de ${ITEM_ALIAS_MAX_PER_ITEM} variações por item.`);
+    }
+    const seen = new Map<string, string>();
+    return values.map((raw) => {
+      const alias = this.normalizeAlias(raw);
+      const previous = seen.get(alias.normalized);
+      if (previous) {
+        throw new BadRequestException(
+          `As variações "${previous}" e "${raw}" são a mesma variação.`,
+        );
+      }
+      seen.set(alias.normalized, raw);
+      return alias;
+    });
+  }
+
+  /** Violação do índice único (itemId, normalizedValue) ao gravar variação. */
+  private isAliasUniqueViolation(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      String((error.meta as { target?: string[] } | undefined)?.target ?? '').includes('normalizedValue')
+    );
   }
 }

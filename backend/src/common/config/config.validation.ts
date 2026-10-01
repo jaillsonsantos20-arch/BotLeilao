@@ -41,5 +41,21 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     }
   }
 
+  // Speech-to-Text é opcional, mas quando é explicitamente habilitado precisa
+  // estar completo — falhar cedo evita áudio silenciosamente ignorado em produção.
+  const sttProvider = String(config.SPEECH_TO_TEXT_PROVIDER ?? '').trim().toLowerCase();
+  if (sttProvider && sttProvider !== 'disabled') {
+    if (!config.SPEECH_TO_TEXT_API_KEY) {
+      throw new Error(
+        'SPEECH_TO_TEXT_PROVIDER está habilitado sem SPEECH_TO_TEXT_API_KEY. ' +
+          'Configure a chave ou defina SPEECH_TO_TEXT_PROVIDER=disabled.',
+      );
+    }
+  }
+  const sttTimeout = Number(config.SPEECH_TO_TEXT_TIMEOUT_MS ?? 0);
+  if (Number.isFinite(sttTimeout) && sttTimeout < 0) {
+    throw new Error('SPEECH_TO_TEXT_TIMEOUT_MS deve ser um número positivo.');
+  }
+
   return config;
 }

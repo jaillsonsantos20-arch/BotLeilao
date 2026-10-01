@@ -92,6 +92,9 @@ export class AuctionEventsService {
     return this.prisma.item.findMany({
       where: { tenantId, auctionEventId: eventId },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      // Variações (sinônimos) do item para o painel gerenciar (inclui as
+      // inativas, que só saem da interpretação de lance quando desativadas).
+      include: { aliases: { orderBy: { createdAt: 'asc' } } },
     });
   }
 

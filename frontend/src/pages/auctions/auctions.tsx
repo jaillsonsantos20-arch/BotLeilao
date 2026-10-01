@@ -30,6 +30,7 @@ import type {
   AuctionStatus,
   Group,
   Item,
+  ItemAlias,
   ItemStatus,
   Subscription,
 } from '@/types/api';
@@ -343,6 +344,7 @@ export function AuctionsPage() {
   const [itemValue, setItemValue] = useState('');
   const [itemDuration, setItemDuration] = useState('');
   const [itemNumber, setItemNumber] = useState('');
+  const [itemAliases, setItemAliases] = useState('');
   const [itemImageUrl, setItemImageUrl] = useState<string | null>(null);
   const [itemImageUploading, setItemImageUploading] = useState(false);
   const [itemFormError, setItemFormError] = useState<string | null>(null);
@@ -356,6 +358,7 @@ export function AuctionsPage() {
   const [editItemImageUrl, setEditItemImageUrl] = useState<string | null>(null);
   const [editItemImageUploading, setEditItemImageUploading] = useState(false);
   const [editItemError, setEditItemError] = useState<string | null>(null);
+  const [editAliasInput, setEditAliasInput] = useState('');
 
   const [listGroupId, setListGroupId] = useState('');
   const [listError, setListError] = useState<string | null>(null);
@@ -532,6 +535,10 @@ export function AuctionsPage() {
   const createItem = useMutation({
     mutationFn: async () => {
       if (!selectedEventId) throw new Error('Selecione um leilão.');
+      const aliases = itemAliases
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
       const response = await api.post<ApiEnvelope<Item>>('/items', {
         auctionEventId: selectedEventId,
         name: itemName,
@@ -544,6 +551,7 @@ export function AuctionsPage() {
         durationMinutes: itemDuration.trim()
           ? Math.max(1, parseInt(itemDuration, 10) || 1)
           : undefined,
+        aliases: aliases.length ? aliases : undefined,
       });
       return response.data.data;
     },
@@ -554,6 +562,7 @@ export function AuctionsPage() {
       setItemValue('');
       setItemDuration('');
       setItemNumber('');
+      setItemAliases('');
       setItemImageUrl(null);
       setItemFormError(null);
     },
@@ -603,6 +612,14 @@ export function AuctionsPage() {
     );
     setEditItemImageUrl(item.imageUrl);
     setEditItemError(null);
+    setEditAliasInput('');
+  }
+
+  function handleAddAlias(): void {
+    if (!editItemTarget) return;
+    const value = editAliasInput.trim();
+    if (!value || createItemAlias.isPending) return;
+    createItemAlias.mutate({ itemId: editItemTarget.id, value });
   }
 
   function saveEditItem(): void {
@@ -725,6 +742,54 @@ export function AuctionsPage() {
     onError: (err) => setEditItemError(extractError(err, 'Falha ao atualizar o item.')),
   });
 
+  // Variações (sinônimos) do item: criadas/editadas/removidas uma a uma no
+  // modal de edição. Só as ativas viram evidência para o lance no WhatsApp.
+  const createItemAlias = useMutation({
+    mutationFn: async (params: { itemId: string; value: string }) => {
+      const response = await api.post<ApiEnvelope<ItemAlias>>(
+        `/items/${params.itemId}/aliases`,
+        { value: params.value },
+      );
+      return response.data.data;
+    },
+    onSuccess: () => {
+      setEditAliasInput('');
+      setEditItemError(null);
+      invalidate();
+    },
+    onError: (err) => setEditItemError(extractError(err, 'Falha ao adicionar a variação.')),
+  });
+
+  const updateItemAlias = useMutation({
+    mutationFn: async (params: {
+      itemId: string;
+      aliasId: string;
+      data: { value?: string; active?: boolean };
+    }) => {
+      const response = await api.patch<ApiEnvelope<ItemAlias>>(
+        `/items/${params.itemId}/aliases/${params.aliasId}`,
+        params.data,
+      );
+      return response.data.data;
+    },
+    onSuccess: () => {
+      setEditItemError(null);
+      invalidate();
+    },
+    onError: (err) => setEditItemError(extractError(err, 'Falha ao atualizar a variação.')),
+  });
+
+  const removeItemAlias = useMutation({
+    mutationFn: async (params: { itemId: string; aliasId: string }) => {
+      await api.delete(`/items/${params.itemId}/aliases/${params.aliasId}`);
+    },
+    onSuccess: () => {
+      setEditItemError(null);
+      invalidate();
+    },
+    onError: (err) => setEditItemError(extractError(err, 'Falha ao remover a variação.')),
+  });
+
   const removeBid = useMutation({
     mutationFn: async (bidId: string) => {
       await api.delete(`/bids/${bidId}`);
@@ -751,6 +816,16 @@ export function AuctionsPage() {
 
   const allItems = useAllItems();
   const allAuctions = useAllAuctions();
+
+  // Variações SEMPRE do dado mais recente: o alvo do modal é uma cópia salva
+  // na abertura, enquanto a lista já traz as variações recém-alteradas.
+  const editItemAliases = useMemo<ItemAlias[]>(() => {
+    if (!editItemTarget) return [];
+    const fresh =
+      (eventItems.data ?? []).find((i) => i.id === editItemTarget.id) ??
+      (allItems.data ?? []).find((i) => i.id === editItemTarget.id);
+    return fresh?.aliases ?? editItemTarget.aliases ?? [];
+  }, [editItemTarget, eventItems.data, allItems.data]);
 
   const itemResultByItem = useMemo(() => {
     const map = new Map<string, Auction>();
@@ -1408,6 +1483,21 @@ export function AuctionsPage() {
                     minutos antes (se a duração for maior que 3 minutos).
                     Deixe vazio para o item ficar aberto até encerrar
                     manualmente pelo painel.
+                  </p>
+                </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="item-aliases">Variações do item (opcional)</Label>
+                  <Input
+                    id="item-aliases"
+                    value={itemAliases}
+                    onChange={(event) => setItemAliases(event.target.value)}
+                    placeholder="Ex.: boi, gado, novilho"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Outros nomes para este item, separados por vírgula. Assim o
+                    participante pode mandar "150 no boi" e o bot identifica este
+                    item. Se dois itens tiverem a mesma variação, o bot pergunta
+                    qual é em vez de chutar. Dá para editar depois no item.
                   </p>
                 </div>
                 <div className="space-y-2 sm:col-span-2">
@@ -2189,7 +2279,7 @@ export function AuctionsPage() {
               <div>
                 <h3 className="text-lg font-semibold">Editar Item</h3>
                 <p className="text-sm text-muted-foreground">
-                  Altere o Nº, a foto, o valor e a duração do item.
+                  Altere o Nº, a foto, o valor, a duração e as variações do item.
                 </p>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setEditItemTarget(null)} aria-label="Fechar">
@@ -2284,6 +2374,93 @@ export function AuctionsPage() {
                     </div>
                   )}
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-alias-input">Variações (sinônimos)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="edit-alias-input"
+                    value={editAliasInput}
+                    onChange={(e) => setEditAliasInput(e.target.value)}
+                    placeholder="Ex.: boi"
+                    maxLength={60}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddAlias();
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleAddAlias}
+                    disabled={createItemAlias.isPending || !editAliasInput.trim()}
+                  >
+                    {createItemAlias.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Plus className="size-4" />
+                    )}
+                    Adicionar
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Outros nomes para este item: o participante pode usar qualquer
+                  um ("150 no boi") e o bot identifica o item certo. Variação
+                  desativada não vale para o lance.
+                </p>
+                {editItemAliases.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhuma variação cadastrada.
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {editItemAliases.map((alias) => (
+                      <li
+                        key={alias.id}
+                        className={`flex items-center justify-between gap-2 rounded-md border px-3 py-2 ${
+                          alias.active ? '' : 'opacity-60'
+                        }`}
+                      >
+                        <span className="min-w-0 truncate text-sm">{alias.value}</span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={updateItemAlias.isPending}
+                            onClick={() =>
+                              updateItemAlias.mutate({
+                                itemId: editItemTarget.id,
+                                aliasId: alias.id,
+                                data: { active: !alias.active },
+                              })
+                            }
+                          >
+                            {alias.active ? 'Desativar' : 'Ativar'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            title="Remover variação"
+                            disabled={removeItemAlias.isPending}
+                            onClick={() =>
+                              removeItemAlias.mutate({
+                                itemId: editItemTarget.id,
+                                aliasId: alias.id,
+                              })
+                            }
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
               {editItemError && (
                 <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">

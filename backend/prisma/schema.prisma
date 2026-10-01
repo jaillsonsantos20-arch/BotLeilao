@@ -118,6 +118,7 @@ model Tenant {
   notifications Notification[]
   sessions      WhatsAppSession[]
   replyBindings WhatsAppReplyBinding[]
+  itemAliases   ItemAlias[]
 }
 
 model User {
@@ -246,11 +247,41 @@ model Item {
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   auctionEvent AuctionEvent?  @relation(fields: [auctionEventId], references: [id], onDelete: Cascade)
   auctions     Auction[]
+  aliases      ItemAlias[]
 
   @@unique([auctionEventId, number])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([auctionEventId])
+}
+
+/**
+ * Variações/sinônimos do nome de um item, cadastrados pelo administrador.
+ *
+ * Permitem que o participante use a linguagem real do WhatsApp
+ * ("150 no boi" → item "Garrote") sem criar item duplicado: a variação
+ * aponta SEMPRE para o mesmo item (e, por ele, para o mesmo tenant).
+ *
+ * `normalizedValue` segue a MESMA normalização do interpretador de lances
+ * (minúsculas, sem acentos, espaços colapsados) e é único por item —
+ * "Boi", "boi" e "BOI" são a mesma variação.
+ */
+model ItemAlias {
+  id              String   @id @default(cuid())
+  tenantId        String
+  itemId          String
+  value           String // como o administrador digitou (ex.: "Garrafa Térmica")
+  normalizedValue String // normalizeMessage(value) — base da unicidade e do matching
+  active          Boolean  @default(true) // inativa fica fora da interpretação
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, normalizedValue])
+  @@index([tenantId, normalizedValue])
+  @@index([itemId, active])
 }
 
 model Group {

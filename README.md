@@ -102,13 +102,54 @@ Regras de lance: valor numérico maior que o atual; cada novo lance reinicia o
 cronômetro de encerramento (`endsAt = lance + duração`). Avisos "DOU-LHE UMA"
 (60s) e "DOU-LHE DUAS" (30s) antecedem o fim.
 
+### Linguagem natural, resposta e áudio
+
+O participante não precisa decorar formato: `25 no capão`, `bolo 25`,
+`R$ 300 no item 01`, responder a um card com `46` ou mandar um **áudio** são
+todos interpretados pelo mesmo interpretador (`ListBidParser`) e registrados
+pelo mesmo serviço (`placeBid`). Números por extenso ("cinquenta") são
+convertidos **apenas em transcrições de áudio**; texto digitado passa intacto.
+
+Confiança em três níveis (o bot nunca escolhe o item por conta própria):
+
+- **Alta** (`01 300`, nome exato/único, variação cadastrada, resposta a um card)
+  → registra na hora;
+- **Intermediária** (nome parecido com erro de digitação/transcrição) → mostra o
+  que entendeu e pede `sim`/`não` (expira em 2 minutos, só quem perguntou
+  responde; `não, era 180` corrige o valor);
+- **Ambiguidade** (`25 no capão` com dois capões) → pergunta o `Nº` do item.
+
+Na disputa, um lance que vem **só com o valor** (`165`, `170`, um áudio "cento e
+sessenta e cinco") herda o item da disputa recente (contexto automático de
+disputa, válido por 5 minutos por leilão/item). Se dois itens estiverem em
+disputa, o bot pergunta o `Nº`; o contexto nunca substitui item explícito,
+resposta a card nem o passo "Qual item?", e só é gravado depois que um lance
+é registrado com sucesso.
+
+O painel também aceita **variações (sinônimos) por item** — em "Garrote" você
+cadastra `boi`, `gado`, `novilho` e o participante pode mandar `150 no boi`,
+`180 gado` ou um áudio "cento e oitenta no boi". A variação é evidência forte
+(registra direto, confiança 0,96), mas nunca chuta: mesma variação em dois
+itens, conflito com o `Nº` ou com a mensagem citada → o bot pergunta qual item.
+Só variação ativa vale, ela não cria item novo e não substitui item explícito.
+
+Para ativar o áudio, configure no `.env` (sem chave o bot ignora áudio e pede
+para digitar):
+
+```bash
+SPEECH_TO_TEXT_PROVIDER=openai-compatible
+SPEECH_TO_TEXT_API_KEY=sk-...
+SPEECH_TO_TEXT_BASE_URL=https://api.openai.com/v1
+SPEECH_TO_TEXT_MODEL=whisper-1
+```
+
 ## Qualidade
 
 ```bash
 cd backend
 npm run typecheck      # tsc
 npm run lint           # eslint (flat config: eslint.config.mjs)
-npm test               # 21 testes unitários
+npm test               # 291 testes unitários
 npm run test:e2e       # 12 testes e2e (requer Postgres do compose)
 
 cd frontend

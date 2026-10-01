@@ -20,7 +20,14 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RequestUser } from '../../common/types/auth.types';
-import { CreateItemDto, ListItemsQueryDto, StartItemAuctionDto, UpdateItemDto } from './dto/item.dto';
+import {
+  CreateItemAliasDto,
+  CreateItemDto,
+  ListItemsQueryDto,
+  StartItemAuctionDto,
+  UpdateItemAliasDto,
+  UpdateItemDto,
+} from './dto/item.dto';
 import { ItemsService } from './items.service';
 
 const UPLOAD_ITEMS_DIR = join(process.cwd(), 'uploads', 'items');
@@ -144,6 +151,47 @@ export class ItemsController {
     @Body() dto: UpdateItemDto,
   ) {
     return this.itemsService.update(user.tenantId, id, dto);
+  }
+
+  @Get(':id/aliases')
+  @ApiOperation({ summary: 'Lista as variações (sinônimos) do item' })
+  listAliases(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.itemsService.listAliases(user.tenantId, id);
+  }
+
+  @Post(':id/aliases')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Cadastra uma variação do item (ex.: "boi" → "Garrote")' })
+  createAlias(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: CreateItemAliasDto,
+  ) {
+    return this.itemsService.createAlias(user.tenantId, id, dto);
+  }
+
+  @Patch(':id/aliases/:aliasId')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Edita uma variação do item (texto e/ou ativo)' })
+  updateAlias(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Param('aliasId') aliasId: string,
+    @Body() dto: UpdateItemAliasDto,
+  ) {
+    return this.itemsService.updateAlias(user.tenantId, id, aliasId, dto);
+  }
+
+  @Delete(':id/aliases/:aliasId')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Remove uma variação do item' })
+  async removeAlias(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Param('aliasId') aliasId: string,
+  ): Promise<{ success: true }> {
+    await this.itemsService.removeAlias(user.tenantId, id, aliasId);
+    return { success: true };
   }
 
   @Delete(':id')

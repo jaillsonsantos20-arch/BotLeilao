@@ -89,6 +89,12 @@ export interface ListAuctionEntry {
   endsAt: Date;
   durationSeconds: number;
   cardSentAt: Date | null;
+  /**
+   * Variações ATIVAS do item (normalizadas), cadastradas pelo administrador.
+   * Alimenta o interpretador ("150 no boi" → item "Garrote"). Opcional para
+   * não quebrar fixtures antigas que montam a linha à mão.
+   */
+  aliases?: string[];
 }
 
 /**
@@ -102,4 +108,32 @@ export interface ReplyContext {
   auctionId: string;
   itemId: string | null;
   itemName: string;
+}
+
+/**
+ * Origem da interpretação de lance.
+ *
+ * TEXT  — mensagem digitada (comportamento original, inalterado).
+ * AUDIO — mensagem de áudio transcrita para texto antes de entrar no
+ *         MESMO pipeline (nunca registra lance direto do áudio).
+ */
+export type BidSource = 'TEXT' | 'AUDIO';
+
+/**
+ * Entrada normalizada enviada ao pipeline único de interpretação.
+ *
+ * Todo tipo de entrada (texto, áudio, reply) converge para aqui: o
+ * `AuctionEngine.handleChatInput` continua sendo o único ponto de entrada e
+ * `AuctionsService.placeBid` continua sendo o único registrador de lances.
+ */
+export interface BidMessageInput {
+  /** Texto já transcrito (áudio) ou o corpo digitado. */
+  text: string;
+  source: BidSource;
+  /** Transcrição original do áudio (quando source = AUDIO). */
+  transcription?: string;
+  /** WhatsApp Message ID da mensagem de origem (rastreabilidade/idempotência). */
+  messageId?: string;
+  /** Qualidade 0..1 informada pelo provedor de transcrição (quando existir). */
+  transcriptionQuality?: number | null;
 }

@@ -1,8 +1,16 @@
 import { AuctionStatus } from '@prisma/client';
 import { Message } from 'whatsapp-web.js';
+import { activeBidContextStore } from '../../src/modules/whatsapp/active-bid.context';
 import { AuctionEngine } from '../../src/modules/whatsapp/auction.engine';
 import { pendingBidContextStore } from '../../src/modules/whatsapp/pending-bid.context';
-import { ActiveListMemory, ReplyContext, WhatsAppGroupContext } from '../../src/modules/whatsapp/whatsapp.types';
+import { pendingBidConfirmationStore } from '../../src/modules/whatsapp/pending-bid-confirmation';
+import { BID_CONFIRMATION_TTL_MS } from '../../src/modules/whatsapp/whatsapp.constants';
+import {
+  ActiveListMemory,
+  BidMessageInput,
+  ReplyContext,
+  WhatsAppGroupContext,
+} from '../../src/modules/whatsapp/whatsapp.types';
 
 function snapshotRow(
   id: string,
@@ -86,6 +94,11 @@ function collectMessages(engine: AuctionEngine) {
   });
   return messages;
 }
+
+// Cada teste parte do zero: o contexto de disputa ativa é singleton por processo.
+beforeEach(() => {
+  activeBidContextStore.clear();
+});
 
 describe('AuctionEngine — lances no modo lista (interpretador)', () => {
   beforeEach(() => {
@@ -475,5 +488,193 @@ describe('AuctionEngine — regra 36 (lance via "Responder")', () => {
       itemId: 'item-4',
       itemName: 'Garrafa térmica 2.5lt',
     });
+  });
+});
+
+describe('AuctionEngine — áudio (Speech-to-Text)', () => {
+  const sender = '5511999999999@c.us';
+
+  beforeEach(() => {
+    pendingBidContextStore.deleteContext('tenant-1', 'group-1', sender);
+    pendingBidConfirmationStore.clear();
+  });
+
+  const audio = (text: string): BidMessageInput => ({
+    text,
+    source: 'AUDIO',
+    transcription: text,
+    messageId: 'audio-1',
+  });
+
+  it('número falado vira dígito e o lance registra no MESMO pipeline', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg(''), undefined, audio('bolo cinquenta'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 50 }),
+    );
+  });
+
+  it('nome errado na transcrição pede confirmação em vez de escolher sozinho', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(
+      buildContext(),
+      msg(''),
+      undefined,
+      audio('bolo degoma cinquenta'),
+    );
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('Confirma?');
+    expect(messages[0]).toContain('Bolo de goma');
+    expect(messages[0]).toContain('50,00');
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(true);
+  });
+
+  it('"a número dois" ditado em áudio responde ao "qual item?"', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('25 no capão'));
+    expect(placeBid).not.toHaveBeenCalled();
+
+    await engine.handleChatInput(buildContext(), msg(''), undefined, audio('a número dois'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-2', amount: 25 }),
+    );
+    expect(pendingBidContextStore.getContext('tenant-1', 'group-1', sender)).toBeNull();
+  });
+});
+
+describe('AuctionEngine — confirmação de lance (confiança intermediária)', () => {
+  const sender = '5511999999999@c.us';
+
+  beforeEach(() => {
+    pendingBidContextStore.deleteContext('tenant-1', 'group-1', sender);
+    pendingBidConfirmationStore.clear();
+  });
+
+  it('"sim" registra o lance que estava aguardando confirmação', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[0]).toContain('Confirma?');
+
+    await engine.handleChatInput(buildContext(), msg('sim'));
+
+    expect(placeBid).toHaveBeenCalledTimes(1);
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 50 }),
+    );
+    expect(messages[1]).toContain('Lance registrado');
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(false);
+  });
+
+  it('"não" cancela sem registrar', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+    await engine.handleChatInput(buildContext(), msg('não'));
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[1]).toContain('cancelado');
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(false);
+  });
+
+  it('correção de valor ("não, era 180") refaz a pergunta e registra em seguida', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+    await engine.handleChatInput(buildContext(), msg('não, era 180'));
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[1]).toContain('Confirma?');
+    expect(messages[1]).toContain('180,00');
+
+    await engine.handleChatInput(buildContext(), msg('sim'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 180 }),
+    );
+  });
+
+  it('confirmação expira após o TTL e nada é registrado', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+    const messages = collectMessages(engine);
+
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+
+    const realNow = Date.now();
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(realNow + BID_CONFIRMATION_TTL_MS + 1000);
+    try {
+      await engine.handleChatInput(buildContext(), msg('sim'));
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(messages[1]).toContain('expirou');
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(false);
+  });
+
+  it('um novo lance substitui a confirmação pendente (a antiga some)', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(true);
+
+    await engine.handleChatInput(buildContext(), msg('01 300'));
+    expect(placeBid).toHaveBeenCalledTimes(1);
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 300 }),
+    );
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(false);
+
+    await engine.handleChatInput(buildContext(), msg('sim'));
+    expect(placeBid).toHaveBeenCalledTimes(1);
+  });
+
+  it('exclusão mútua: criar a confirmação apaga o "qual item?" pendente', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('25 no capão'));
+    expect(pendingBidContextStore.getContext('tenant-1', 'group-1', sender)).not.toBeNull();
+
+    // Um lance de confiança intermediária no meio do "qual item?": só uma
+    // pergunta fica de pé por participante.
+    await engine.handleChatInput(buildContext(), msg('bolo degoma 50'));
+
+    expect(pendingBidContextStore.getContext('tenant-1', 'group-1', sender)).toBeNull();
+    expect(pendingBidConfirmationStore.hasActive('tenant-1', 'group-1', sender)).toBe(true);
+
+    await engine.handleChatInput(buildContext(), msg('sim'));
+
+    expect(placeBid).toHaveBeenCalledTimes(1);
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 50 }),
+    );
   });
 });

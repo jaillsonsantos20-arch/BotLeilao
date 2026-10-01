@@ -3,6 +3,7 @@ import { AuctionsModule } from '../auctions/auctions.module';
 import { GroupsModule } from '../groups/groups.module';
 import { AuctionEngine } from './auction.engine';
 import { CommandRouter } from './command-handler';
+import { SpeechToTextService } from './speech-to-text.service';
 import { WhatsAppClientManager } from './whatsapp-client.manager';
 import { WhatsAppController } from './whatsapp.controller';
 import { WhatsAppService } from './whatsapp.service';
@@ -10,7 +11,13 @@ import { WhatsAppService } from './whatsapp.service';
 @Module({
   imports: [AuctionsModule, GroupsModule],
   controllers: [WhatsAppController],
-  providers: [AuctionEngine, CommandRouter, WhatsAppClientManager, WhatsAppService],
+  providers: [
+    AuctionEngine,
+    CommandRouter,
+    WhatsAppClientManager,
+    WhatsAppService,
+    SpeechToTextService,
+  ],
   exports: [WhatsAppService, WhatsAppClientManager, AuctionEngine],
 })
 export class WhatsappModule {}
