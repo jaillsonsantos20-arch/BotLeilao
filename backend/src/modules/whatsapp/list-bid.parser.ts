@@ -147,6 +147,10 @@ const fillerWords = new Set([
   // preposição / artigo
   'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
   'pro', 'pra', 'para', 'por', 'com', 'o', 'a', 'os', 'as', 'um', 'uma',
+  // muletas de frase: o que importa é o NOME do item e o VALOR, não a frase
+  // inteira ("meu lance é 25 no bolo" → sobra "bolo")
+  'e', 'eu', 'meu', 'minha', 'meus', 'minhas', 'pode', 'poderia', 'colocar',
+  'pelo', 'pela', 'pelos', 'pelas', 'esse', 'essa', 'esses', 'essas',
 ]);
 
 function stripFillerWords(message: string): string {
@@ -552,6 +556,85 @@ function resolveByName(
   return { item: best.item, level: best.level, score: best.score, candidates };
 }
 
+/** true quando o token é um número de item de 1 a 4 dígitos ("01", "1250"). */
+function isItemNumberToken(token: string): boolean {
+  return /^\d{1,4}$/.test(stripEdgePunctuation(token));
+}
+
+/** Teto de janelas avaliadas (mensagem longa não pode custar caro). */
+const WINDOWS_MAX_TOKENS = 6;
+const WINDOWS_MAX_TOTAL = 200;
+
+/**
+ * Janelas contíguas de tokens da frase ("meu lance é 25 no bolo" → "bolo").
+ *
+ * O participante não precisa escrever só o nome do item: quando a frase INTEIRA
+ * não casou com nenhum item, o motor procura apenas a janela com o nome — o
+ * resto da frase é irrelevante. Números puros ficam de fora (Nº só pelo
+ * caminho de número ou com rótulo "item"/"nº"), e a frase completa é pulada
+ * (já foi pontuada antes).
+ */
+function nameWindows(tokens: string[]): Array<{ text: string; tokens: string[] }> {
+  const windows: Array<{ text: string; tokens: string[] }> = [];
+  for (let start = 0; start < tokens.length; start++) {
+    const maxLen = Math.min(WINDOWS_MAX_TOKENS, tokens.length - start);
+    for (let len = 1; len <= maxLen; len++) {
+      if (start === 0 && len === tokens.length) continue; // frase toda já pontuada
+      const slice = tokens.slice(start, start + len);
+      if (slice.every(isItemNumberToken)) continue; // número não é nome de item
+      windows.push({ text: slice.join(' '), tokens: slice });
+      if (windows.length >= WINDOWS_MAX_TOTAL) return windows;
+    }
+  }
+  return windows;
+}
+
+/**
+ * Pontua cada janela da frase contra todos os itens e devolve o MELHOR
+ * candidato por item. Só é chamado quando a frase inteira não gerou nenhum
+ * candidato forte — nunca mexe em frases que já resolvem sozinhas.
+ */
+function resolveByNameWindows(
+  items: Item[],
+  allTokens: string[],
+): { item: Item | null; level: MatchLevel; score: number; candidates: Array<{ item: Item; score: number; level: MatchLevel }> } {
+  const best = new Map<string, { item: Item; score: number; level: MatchLevel }>();
+
+  for (const window of nameWindows(allTokens)) {
+    for (const item of items) {
+      const { score, level } = scoreCandidate(item, window.text, window.tokens, false);
+      if (score <= 0) continue;
+      const current = best.get(item.id);
+      if (!current || current.score < score) best.set(item.id, { item, score, level });
+    }
+  }
+
+  const candidates = [...best.values()].sort((a, b) => b.score - a.score);
+  const top = candidates[0] ?? { item: null, score: 0, level: MatchLevel.None };
+  return { item: top.item, level: top.level, score: top.score, candidates };
+}
+
+/** Rótulos que revelam que o número é Nº de item ("no item 5", "nº 2"). */
+const ITEM_NUMBER_LABELS = new Set([
+  'item', 'itens', 'n', 'no', 'num', 'numero', 'nº', 'n°',
+]);
+
+/**
+ * Procura um Nº de item precedido de rótulo em qualquer posição da frase
+ * ("meu lance é 25 no item 5" → 5). Sem rótulo o número nunca vira item:
+ * "25 reais e 50 centavos" não pode virar item 50.
+ */
+function findLabeledItemNumber(tokens: string[]): number | null {
+  for (let i = 1; i < tokens.length; i++) {
+    if (!isItemNumberToken(tokens[i])) continue;
+    const label = stripEdgePunctuation(tokens[i - 1]).toLowerCase();
+    if (!ITEM_NUMBER_LABELS.has(label)) continue;
+    const number = parseInt(stripEdgePunctuation(tokens[i]), 10);
+    if (number > 0) return number;
+  }
+  return null;
+}
+
 /**
  * Verifica se há correspondência única e suficiente.
  * Retorna o resultado da resolução ou null se ambíguo.
@@ -637,16 +720,19 @@ export class ListBidParser {
    * Parseia uma mensagem de lance no formato lista.
    *
    * Formatos aceitos:
-   *  - Nº + valor: "01 300", "1 25,50", "01-300", "01 r$ 300"
+   *  - Nº + valor: "01 300", "1 25,50", "01-300", "01:25", "01;25", "01 r$ 300"
    *  - Nome + valor: "capão 300", "25 no capão", "25 na garrafa térmica"
+   *  - Frase livre: só o nome/nº do item e o valor importam —
+   *    "meu lance é 25 no bolo", "pode colocar 25 no bolo"
    *  - Valor puro: "300", "R$ 300" (item fica por conta do chamador)
    */
   parseMessage(message: string): ParsedBidResult {
     let normalized = normalizeMessage(message);
     const originalMessage = message.trim();
 
-    // "01-300" / "01 – 300" → "01 300" (separadores entre dígitos)
-    normalized = normalized.replace(/(\d)\s*[-–—]\s*(\d)/g, '$1 $2');
+    // "01-300" / "01 – 300" / "01:25" / "01;25" / "01:R$ 300" → "01 300"
+    // (separadores entre dígitos: hífen, dois-pontos, ponto e vírgula)
+    normalized = normalized.replace(/(\d)\s*[-–—;:]\s*(?:r\$\s*)?(\d)/g, '$1 $2');
 
     // Inicializa resultado
     const result: ParsedBidResult = {
@@ -845,19 +931,26 @@ export class ListBidParser {
               candidates = [toCandidate(hit.item, hit.score)];
             }
           } else {
-            const uniqueMatch = checkUniqueMatch(this.items, nameResult);
+            // A frase toda casou? Usa. Se não, procura só a JANELA com o nome
+            // do item — o resto da frase ("meu lance é", "pode colocar") é
+            // irrelevante para entender o lance.
+            const hasStrongName = nameResult.candidates.some((c) => c.score >= 0.5);
+            const effectiveName = hasStrongName
+              ? nameResult
+              : resolveByNameWindows(this.items, nameTokens);
+            const uniqueMatch = checkUniqueMatch(this.items, effectiveName);
 
             if (uniqueMatch.match) {
               itemNumber = uniqueMatch.item.order;
               itemId = uniqueMatch.item.id;
               itemName = uniqueMatch.item.name;
-              const matchedCandidate = nameResult.candidates.find(
+              const matchedCandidate = effectiveName.candidates.find(
                 (c) => c.item === uniqueMatch.item,
               );
               matchScore = matchedCandidate?.score ?? 0.5;
               matchedBy = matchedByFromLevel(matchedCandidate?.level ?? MatchLevel.None);
               matchCoverage = computeCoverage(uniqueMatch.item, nameTokens);
-              candidates = nameResult.candidates
+              candidates = effectiveName.candidates
                 .filter((c) => c.score >= 0.5)
                 .slice(0, this.maxCandidates)
                 .map((c) => toCandidate(c.item, c.score));
@@ -867,9 +960,27 @@ export class ListBidParser {
               candidates = uniqueMatch.candidates.slice(0, this.maxCandidates);
               needsUserInput = true;
             } else {
-              // Valor ok, mas nenhum item reconhecido
-              ambiguous = true;
-              needsUserInput = true;
+              // Valor ok, mas nenhum nome reconhecido: tenta o Nº do item com
+              // rótulo ("meu lance é 25 no item 5"); sem Nº, pergunta.
+              const labeledNumber = findLabeledItemNumber(remainingTokens);
+              if (labeledNumber !== null) {
+                const r = resolveByNumber(this.items, String(labeledNumber));
+                if (r.item) {
+                  itemNumber = r.item.order;
+                  itemId = r.item.id;
+                  itemName = r.item.name;
+                  matchScore = r.score;
+                  candidates = [toCandidate(r.item, r.score)];
+                  matchedBy = matchedByFromLevel(r.level);
+                  matchCoverage = matchedBy === 'item_number' ? 1 : computeCoverage(r.item, nameTokens);
+                } else {
+                  // Nº alegado não existe na lista (o chamador orienta o usuário)
+                  itemNumber = labeledNumber;
+                }
+              } else {
+                ambiguous = true;
+                needsUserInput = true;
+              }
             }
           }
         }

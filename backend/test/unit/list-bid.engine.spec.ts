@@ -131,6 +131,54 @@ describe('AuctionEngine — lances no modo lista (interpretador)', () => {
     );
   });
 
+  it('registra lance com separador de dois-pontos ("01:25")', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('01:25'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 25 }),
+    );
+  });
+
+  it('registra lance com separador de ponto e vírgula ("01;25")', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('01;25'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 25 }),
+    );
+  });
+
+  it('registra lance em frase livre ("meu lance é 300 no bolo")', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('meu lance é 300 no bolo'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-1', amount: 300 }),
+    );
+  });
+
+  it('frase livre com nº rotulado resolve o item ("meu lance é 300 no item 5")', async () => {
+    const { engine, placeBid } = buildEngine();
+    engine['listGroups'].set('group-1', { ...list });
+
+    await engine.handleChatInput(buildContext(), msg('meu lance é 300 no item 5'));
+
+    expect(placeBid).toHaveBeenCalledWith(
+      'tenant-1',
+      expect.objectContaining({ auctionId: 'auction-5', amount: 300 }),
+    );
+  });
+
   it('"25 no capão" é ambíguo: pergunta e NÃO registra lance', async () => {
     const { engine, placeBid } = buildEngine();
     engine['listGroups'].set('group-1', { ...list });

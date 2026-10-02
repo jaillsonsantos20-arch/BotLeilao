@@ -29,6 +29,39 @@ describe('ListBidParser — Nº do item + valor', () => {
     expect(r.itemId).toBe('a1');
   });
 
+  it('interpreta separador de dois-pontos "01:25"', () => {
+    const r = parser().parseMessage('01:25');
+    expect(r.amount).toBe(25);
+    expect(r.itemNumber).toBe(1);
+    expect(r.itemId).toBe('a1');
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('interpreta separador de ponto e vírgula "01;25"', () => {
+    const r = parser().parseMessage('01;25');
+    expect(r.amount).toBe(25);
+    expect(r.itemNumber).toBe(1);
+    expect(r.itemId).toBe('a1');
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('aceita espaços em volta do separador ("02 ; 35,00" e "03 : 110")', () => {
+    const semicolon = parser().parseMessage('02 ; 35,00');
+    expect(semicolon.amount).toBe(35);
+    expect(semicolon.itemId).toBe('a2');
+
+    const colon = parser().parseMessage('03 : 110');
+    expect(colon.amount).toBe(110);
+    expect(colon.itemId).toBe('a3');
+  });
+
+  it('separador + R$ ("01:R$ 300") continua valendo o Nº do item', () => {
+    const r = parser().parseMessage('01:R$ 300');
+    expect(r.amount).toBe(300);
+    expect(r.itemId).toBe('a1');
+    expect(r.matchedBy).toBe('item_number');
+  });
+
   it('ignora o símbolo "r$" entre Nº e valor ("01 r$ 300")', () => {
     const r = parser().parseMessage('01 r$ 300');
     expect(r.amount).toBe(300);
@@ -171,6 +204,60 @@ describe('ListBidParser — ambiguidade (regra de ouro: nunca adivinhar)', () =>
     expect(r.itemId).toBeNull();
     expect(r.ambiguous).toBe(true);
     expect(r.candidates).toHaveLength(0);
+  });
+});
+
+describe('ListBidParser — frase livre (só o nome/nº do item e o valor importam)', () => {
+  const frases = [
+    'meu lance é 25 no bolo',
+    'pode colocar 25 no bolo',
+    'eu fico com 25 no bolo',
+    'ofereço 25 pelo bolo',
+    'meu lance 25 bolo',
+    'esse bolo 25',
+  ];
+
+  it.each(frases)('%s → item 1, R$ 25', (frase) => {
+    const r = parser().parseMessage(frase);
+    expect(r.amount).toBe(25);
+    expect(r.itemId).toBe('a1');
+    expect(r.itemNumber).toBe(1);
+    expect(r.ambiguous).toBe(false);
+    expect(r.matchedBy).toBe('item_name_partial');
+    expect(r.matchCoverage).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('frase livre com nome ambíguo continua perguntando ("meu lance é 25 no capão")', () => {
+    const r = parser().parseMessage('meu lance é 25 no capão');
+    expect(r.amount).toBe(25);
+    expect(r.ambiguous).toBe(true);
+    expect(r.itemId).toBeNull();
+    expect(r.candidates.map((c) => c.itemNumber).sort()).toEqual([2, 3]);
+    expect(r.needsUserInput).toBe(true);
+  });
+
+  it('nº do item com rótulo no meio da frase ("meu lance é 25 no item 5")', () => {
+    const r = parser().parseMessage('meu lance é 25 no item 5');
+    expect(r.amount).toBe(25);
+    expect(r.itemId).toBe('a5');
+    expect(r.itemNumber).toBe(5);
+    expect(r.matchedBy).toBe('item_number');
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('nº com rótulo que não existe orienta ("meu lance é 25 no item 99")', () => {
+    const r = parser().parseMessage('meu lance é 25 no item 99');
+    expect(r.amount).toBe(25);
+    expect(r.itemNumber).toBe(99);
+    expect(r.itemId).toBeNull();
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('número SEM rótulo nunca vira item ("25 reais e 50 centavos")', () => {
+    const r = parser().parseMessage('25 reais e 50 centavos');
+    expect(r.amount).toBe(25);
+    expect(r.itemId).toBeNull();
+    expect(r.itemNumber).toBeNull();
   });
 });
 
