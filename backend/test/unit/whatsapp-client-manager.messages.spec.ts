@@ -11,20 +11,29 @@ type Internals = {
   handleIncomingMessage: (tenantId: string, message: Message) => Promise<void>;
 };
 
-function build(stt?: { isEnabled: () => boolean; friendlyMessage: (e?: string) => string; transcribe: jest.Mock }) {
+function build(
+  stt?: { isEnabled: () => boolean; friendlyMessage: (e?: string) => string; transcribe: jest.Mock },
+  options: { linked?: boolean } = {},
+) {
   const route = jest.fn().mockResolvedValue(undefined);
   const speechToText = stt ?? {
     isEnabled: () => false,
     friendlyMessage: () => '🤖 Não consigo processar áudio. Digite o seu lance (01 300).',
     transcribe: jest.fn(),
   };
+  // Vínculo do grupo no painel: o áudio só é processado/respondido nele.
+  const group = {
+    findFirst: jest
+      .fn()
+      .mockResolvedValue(options.linked === false ? null : { id: 'group-interno-1' }),
+  };
   const manager = new WhatsAppClientManager(
-    {} as never,
+    { group } as never,
     { route } as never,
     {} as never,
     speechToText as never,
   );
-  return { manager: manager as unknown as Internals, route, speechToText };
+  return { manager: manager as unknown as Internals, route, speechToText, group };
 }
 
 function groupMessage(overrides: Partial<Record<string, unknown>> = {}): Message {
@@ -180,5 +189,48 @@ describe('WhatsAppClientManager — áudio (Speech-to-Text)', () => {
 
     await expect(manager.handleIncomingMessage('tenant-1', message)).resolves.toBeUndefined();
     expect(route).not.toHaveBeenCalled();
+  });
+
+  it('grupo não vinculado ao painel ignora o áudio em silêncio (sem resposta, sem transcrição)', async () => {
+    const transcribe = jest.fn();
+    const { manager, route, group } = build(
+      { isEnabled: () => false, friendlyMessage: () => '🤖 Não consigo processar áudio.', transcribe },
+      { linked: false },
+    );
+    const message = groupMessage({
+      type: 'ptt',
+      body: '',
+      downloadMedia: async () => ({ data: 'QUJDRA==', mimetype: 'audio/ogg' }),
+    });
+
+    await manager.handleIncomingMessage('tenant-1', message);
+
+    expect(group.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: 'tenant-1', whatsappGroupId: 'group-1', isActive: true },
+      }),
+    );
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(route).not.toHaveBeenCalled();
+    const sendMessage = (message as unknown as { __chat: { sendMessage: jest.Mock } }).__chat
+      .sendMessage;
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('grupo vinculado segue respondendo as falhas de transcrição', async () => {
+    const { manager, route } = build({
+      isEnabled: () => false,
+      friendlyMessage: () => '🤖 Não consigo processar áudio. Digite o seu lance (01 300).',
+      transcribe: jest.fn(),
+    });
+    const message = groupMessage({ type: 'audio', body: '' });
+
+    await manager.handleIncomingMessage('tenant-1', message);
+
+    expect(route).not.toHaveBeenCalled();
+    const sendMessage = (message as unknown as { __chat: { sendMessage: jest.Mock } }).__chat
+      .sendMessage;
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][0]).toContain('Digite o seu lance');
   });
 });

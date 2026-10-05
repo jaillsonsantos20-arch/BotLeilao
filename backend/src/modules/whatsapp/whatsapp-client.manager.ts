@@ -645,6 +645,15 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
 
       // --- Áudio (recado/PTT): transcreve e entra no MESMO pipeline ---
       if (message.type === 'ptt' || message.type === 'audio') {
+        // O áudio é o único caso em que o bot responde ANTES do motor (falhas
+        // de transcrição). Sem checar o vínculo aqui, grupos sem leilão também
+        // recebiam a explicação — o texto, em contraste, é ignorado em silêncio.
+        if (!(await this.isGroupLinked(tenantId, group.id._serialized))) {
+          this.logger.log(
+            `[DIAG] Áudio ignorado — grupo ${group.id._serialized} não vinculado ao painel.`,
+          );
+          return;
+        }
         const audioInput = await this.transcribeAudio(message);
         if (!audioInput) return; // falha já explicada ao participante
         await this.router.route(context, message, replyContext, audioInput);
@@ -664,6 +673,23 @@ export class WhatsAppClientManager implements OnModuleInit, OnModuleDestroy {
         (error as Error).stack,
       );
     }
+  }
+
+  /**
+   * true quando o grupo está vinculado ao painel (registro `Group` ativo do
+   * tenant). Usado para limitar o fluxo de áudio — e as respostas de falha de
+   * transcrição — aos grupos do leilão.
+   *
+   * Uma falha aqui NÃO é engolida: ela sobe para o catch de
+   * handleIncomingMessage (log sem resposta), ou seja, erro de banco nunca
+   * gera mensagem para o participante.
+   */
+  private async isGroupLinked(tenantId: string, whatsappGroupId: string): Promise<boolean> {
+    const group = await this.prisma.group.findFirst({
+      where: { tenantId, whatsappGroupId, isActive: true },
+      select: { id: true },
+    });
+    return Boolean(group);
   }
 
   /**
