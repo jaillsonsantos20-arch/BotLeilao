@@ -49,6 +49,20 @@ describe('spokenNumbersToDigits — números falados em lances', () => {
   it('palavras comuns permanecem intactas', () => {
     expect(spokenNumbersToDigits('bom dia a todos')).toBe('bom dia a todos');
   });
+
+  it('não soma item e valor separados por vírgula ("dois, quatrocentos")', () => {
+    expect(spokenNumbersToDigits('item número dois, quatrocentos reais')).toBe(
+      'item número 2, 400 reais',
+    );
+  });
+
+  it('não soma unidade seguida de centena sem conectivo ("dois quatrocentos")', () => {
+    expect(spokenNumbersToDigits('dois quatrocentos reais')).toBe('2 400 reais');
+  });
+
+  it('mantém a soma quando há conectivo ("quatrocentos e dois")', () => {
+    expect(spokenNumbersToDigits('quatrocentos e dois reais')).toBe('402 reais');
+  });
 });
 
 describe('parseNumberWords', () => {

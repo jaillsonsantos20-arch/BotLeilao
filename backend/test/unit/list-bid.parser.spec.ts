@@ -291,3 +291,40 @@ describe('ListBidParser — frases naturais (verbo + valor + item)', () => {
     expect(isValueOnlyAfterFillers('bom dia a todos')).toBe(false);
   });
 });
+
+describe('ListBidParser — nº rotulado + valor (lance dito por áudio)', () => {
+  const frases = [
+    'Item número 2, 400 reais',
+    'item numero 2 400 reais',
+    'número 2, 400 reais',
+    'item 2, 400',
+    'no item 2 400',
+  ];
+
+  it.each(frases)('%s → item 2, R$ 400', (frase) => {
+    const r = parser().parseMessage(frase);
+    expect(r.amount).toBe(400);
+    expect(r.itemNumber).toBe(2);
+    expect(r.itemId).toBe('a2');
+    expect(r.matchedBy).toBe('item_number');
+    expect(r.ambiguous).toBe(false);
+    expect(r.confidence).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('nº rotulado inexistente orienta em vez de adivinhar ("item 99 400 reais")', () => {
+    const r = parser().parseMessage('item 99 400 reais');
+    expect(r.amount).toBe(400);
+    expect(r.itemNumber).toBe(99);
+    expect(r.itemId).toBeNull();
+    expect(r.ambiguous).toBe(false);
+  });
+
+  it('rótulo sem número deixa o valor como valor e pede o item ("item 400 reais")', () => {
+    const r = parser().parseMessage('item 400 reais');
+    expect(r.amount).toBe(400);
+    expect(r.itemId).toBeNull();
+    expect(r.itemNumber).toBeNull();
+    expect(r.ambiguous).toBe(true);
+    expect(r.needsUserInput).toBe(true);
+  });
+});

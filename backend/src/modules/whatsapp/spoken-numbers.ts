@@ -171,6 +171,13 @@ function isNumberWord(key: string): boolean {
   );
 }
 
+function hasWord(dict: WordDict, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(dict, key);
+}
+
+/** Pontuação que encerra um número falado ("dois,", "quatrocentos."). */
+const RUN_TERMINATOR = /[,.;:!?]$/;
+
 /**
  * Soma uma sequência de palavras numéricas já normalizadas.
  *
@@ -266,10 +273,23 @@ export function spokenNumbersToDigits(
     let end = index;
     let sawNumber = false;
     while (end < tokens.length) {
-      const currentKey = tokenKey(tokens[end]);
+      const rawToken = tokens[end];
+      const currentKey = tokenKey(rawToken);
       if (isNumberWord(currentKey)) {
+        // Unidade/dezena imediatamente seguida de centena SEM conectivo
+        // ("dois quatrocentos") não é como o pt-BR forma 402 (seria
+        // "quatrocentos e dois"): são dois números distintos na frase
+        // (nº do item + valor), então a sequência termina antes dela.
+        const prevKey = end > index ? tokenKey(tokens[end - 1]) : '';
+        const prevIsUnitOrTen = hasWord(UNITS, prevKey) || hasWord(TENS, prevKey);
+        if (end > index && hasWord(HUNDREDS, currentKey) && prevIsUnitOrTen) {
+          break;
+        }
         sawNumber = true;
         end += 1;
+        // "dois, quatrocentos" é item + valor; pontuação final encerra o
+        // número para não somar os dois num só (viraria 402).
+        if (RUN_TERMINATOR.test(rawToken)) break;
         continue;
       }
       if (

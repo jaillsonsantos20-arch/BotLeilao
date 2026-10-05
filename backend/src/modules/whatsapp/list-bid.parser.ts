@@ -620,19 +620,28 @@ const ITEM_NUMBER_LABELS = new Set([
 ]);
 
 /**
- * Procura um Nº de item precedido de rótulo em qualquer posição da frase
- * ("meu lance é 25 no item 5" → 5). Sem rótulo o número nunca vira item:
- * "25 reais e 50 centavos" não pode virar item 50.
+ * Índice do primeiro número de item precedido de rótulo ("item 2", "nº 3").
+ * null quando nenhum número da frase está rotulado.
  */
-function findLabeledItemNumber(tokens: string[]): number | null {
+function findLabeledItemNumberIndex(tokens: string[]): number | null {
   for (let i = 1; i < tokens.length; i++) {
     if (!isItemNumberToken(tokens[i])) continue;
     const label = stripEdgePunctuation(tokens[i - 1]).toLowerCase();
     if (!ITEM_NUMBER_LABELS.has(label)) continue;
     const number = parseInt(stripEdgePunctuation(tokens[i]), 10);
-    if (number > 0) return number;
+    if (number > 0) return i;
   }
   return null;
+}
+
+/**
+ * Procura um Nº de item precedido de rótulo em qualquer posição da frase
+ * ("meu lance é 25 no item 5" → 5). Sem rótulo o número nunca vira item:
+ * "25 reais e 50 centavos" não pode virar item 50.
+ */
+function findLabeledItemNumber(tokens: string[]): number | null {
+  const index = findLabeledItemNumberIndex(tokens);
+  return index === null ? null : parseInt(stripEdgePunctuation(tokens[index]), 10);
 }
 
 /**
@@ -778,6 +787,27 @@ export class ListBidParser {
         amount = amt;
         amountRaw = tokens.slice(1).join(' ');
         remainingTokens = tokens.slice(1 + consumed);
+      }
+    }
+
+    // Formato C: Nº rotulado + valor ("item número 2, 400 reais", "nº 3 250").
+    // Sem este passo o Formato B leria "2" como VALOR e deixaria "400" — que a
+    // frase rotula como nº de item — virar um item inexistente. É a forma mais
+    // comum de lance dito por áudio, depois que a transcrição devolve dígitos.
+    if (amount === null) {
+      const labeledIndex = findLabeledItemNumberIndex(tokens);
+      if (labeledIndex !== null) {
+        for (let i = 0; i < tokens.length; i++) {
+          if (i === labeledIndex) continue;
+          const parsed = parseAmount(tokens[i]);
+          if (parsed !== null && parsed > 0) {
+            amount = parsed;
+            amountRaw = tokens[i];
+            claimedNumber = parseInt(stripEdgePunctuation(tokens[labeledIndex]), 10);
+            remainingTokens = tokens.filter((_, idx) => idx !== i && idx !== labeledIndex);
+            break;
+          }
+        }
       }
     }
 
