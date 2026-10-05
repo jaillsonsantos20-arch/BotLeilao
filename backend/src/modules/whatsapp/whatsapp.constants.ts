@@ -66,3 +66,22 @@ export const ACTIVE_BID_CONTEXT_MAX = 2000;
 export const SPEECH_TO_TEXT_DEFAULT_MAX_AUDIO_MB = 8;
 export const SPEECH_TO_TEXT_DEFAULT_MAX_DURATION_SECONDS = 180;
 export const SPEECH_TO_TEXT_DEFAULT_TIMEOUT_MS = 20000;
+
+/**
+ * Contexto enviado ao provedor Whisper (`prompt`, limite de 224 tokens).
+ *
+ * Sem contexto o modelo erra números por extenso em pt-BR ("trezentos no
+ * porco" virava "Presentes no porco") e o lance é descartado por não ter
+ * valor. O prompt fixa o domínio (leilão) e a forma dos lances.
+ *
+ * Sobrescrevível por `SPEECH_TO_TEXT_PROMPT`; use "none" para não enviar.
+ */
+export const SPEECH_TO_TEXT_DEFAULT_PROMPT =
+  'Áudio de leilão em português do Brasil, num grupo de WhatsApp. ' +
+  'Os participantes dão lances dizendo o valor por extenso seguido do nome do item, ' +
+  'por exemplo: "trezentos no porco", "cento e cinquenta no bolo", ' +
+  '"duzentos e cinquenta na bijuteria". ' +
+  'Transcreva exatamente o que foi falado, mantendo os números por extenso.';
+
+/** Valor de `SPEECH_TO_TEXT_PROMPT` que desliga o envio de contexto. */
+export const SPEECH_TO_TEXT_PROMPT_OFF = 'none';

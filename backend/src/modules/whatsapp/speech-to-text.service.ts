@@ -4,7 +4,9 @@ import { AppConfig } from '../../common/config/configuration';
 import {
   SPEECH_TO_TEXT_DEFAULT_MAX_AUDIO_MB,
   SPEECH_TO_TEXT_DEFAULT_MAX_DURATION_SECONDS,
+  SPEECH_TO_TEXT_DEFAULT_PROMPT,
   SPEECH_TO_TEXT_DEFAULT_TIMEOUT_MS,
+  SPEECH_TO_TEXT_PROMPT_OFF,
 } from './whatsapp.constants';
 
 /** Áudio entregue ao provedor (já validado quanto a tamanho/formato). */
@@ -99,6 +101,8 @@ class OpenAiCompatibleSpeechProvider implements SpeechToTextProvider {
       apiKey: string;
       model: string;
       language: string;
+      /** Contexto de domínio; string vazia = nada é enviado. */
+      prompt: string;
       timeoutMs: number;
     },
   ) {}
@@ -119,6 +123,11 @@ class OpenAiCompatibleSpeechProvider implements SpeechToTextProvider {
     form.append('model', this.settings.model);
     form.append('language', this.settings.language);
     form.append('response_format', 'json');
+    // Contexto do domínio: sem ele o Whisper erra números por extenso em pt-BR
+    // ("trezentos" -> "Presentes") e o lance acaba descartado por não ter valor.
+    if (this.settings.prompt) {
+      form.append('prompt', this.settings.prompt);
+    }
 
     let response: Response;
     try {
@@ -234,9 +243,22 @@ export class SpeechToTextService {
       apiKey: stt.apiKey,
       model: stt.model,
       language: stt.language,
+      prompt: this.resolvePrompt(stt.prompt),
       timeoutMs: stt.timeoutMs || SPEECH_TO_TEXT_DEFAULT_TIMEOUT_MS,
     });
     this.logger.log(`Speech-to-Text ativo (provedor OpenAI-compatible, modelo ${stt.model}).`);
+  }
+
+  /**
+   * Contexto enviado ao provedor (`prompt` do Whisper):
+   *  - valor no `SPEECH_TO_TEXT_PROMPT` → usado como está;
+   *  - vazio → prompt padrão do domínio (leilão, números por extenso em pt-BR);
+   *  - `none` → nenhum contexto (para provedores que rejeitam o campo).
+   */
+  private resolvePrompt(raw: string | undefined): string {
+    const value = (raw ?? '').trim();
+    if (!value) return SPEECH_TO_TEXT_DEFAULT_PROMPT;
+    return value.toLowerCase() === SPEECH_TO_TEXT_PROMPT_OFF ? '' : value;
   }
 
   /** true quando há um provedor configurado (áudio será transcrito). */

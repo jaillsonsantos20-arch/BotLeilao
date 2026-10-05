@@ -145,6 +145,45 @@ describe('SpeechToTextService — provedor OpenAI-compatible', () => {
     expect(JSON.stringify(result)).not.toContain('buffer');
     expect(JSON.stringify(result)).not.toContain('base64');
   });
+
+  it('envia o prompt de domínio junto do áudio (evita número errado em pt-BR)', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ text: 'trezentos no porco' }),
+    }) as unknown as typeof fetch;
+
+    const service = build(fullConfig); // sem prompt no env → padrão
+    await service.transcribe(audio());
+
+    const body = (global.fetch as jest.Mock).mock.calls[0][1]?.body as FormData;
+    expect(body.get('prompt')).toContain('trezentos no porco');
+  });
+
+  it('SPEECH_TO_TEXT_PROMPT=none não envia contexto ao provedor', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ text: 'trezentos no porco' }),
+    }) as unknown as typeof fetch;
+
+    const service = build({ ...fullConfig, prompt: 'none' });
+    await service.transcribe(audio());
+
+    const body = (global.fetch as jest.Mock).mock.calls[0][1]?.body as FormData;
+    expect(body.get('prompt')).toBeNull();
+  });
+
+  it('prompt personalizado do env substitui o padrão', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ text: '300 no porco' }),
+    }) as unknown as typeof fetch;
+
+    const service = build({ ...fullConfig, prompt: 'contexto exclusivo do cliente' });
+    await service.transcribe(audio());
+
+    const body = (global.fetch as jest.Mock).mock.calls[0][1]?.body as FormData;
+    expect(body.get('prompt')).toBe('contexto exclusivo do cliente');
+  });
 });
 
 describe('SpeechToTextService — mensagens amigáveis', () => {

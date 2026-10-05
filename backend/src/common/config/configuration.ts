@@ -51,6 +51,11 @@ export interface AppConfig {
     baseUrl: string;
     model: string;
     language: string;
+    /**
+     * Contexto enviado ao Whisper (opcional). Vazio = prompt padrão do
+     * domínio; 'none' = nenhum prompt é enviado ao provedor.
+     */
+    prompt: string;
     timeoutMs: number;
     maxAudioMb: number;
     maxDurationSeconds: number;
@@ -102,6 +107,7 @@ export default (): AppConfig => ({
     baseUrl: (process.env.SPEECH_TO_TEXT_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
     model: process.env.SPEECH_TO_TEXT_MODEL ?? 'whisper-1',
     language: process.env.SPEECH_TO_TEXT_LANGUAGE ?? 'pt',
+    prompt: process.env.SPEECH_TO_TEXT_PROMPT ?? '',
     timeoutMs: parseInt(process.env.SPEECH_TO_TEXT_TIMEOUT_MS ?? '20000', 10),
     maxAudioMb: parseFloat(process.env.SPEECH_TO_TEXT_MAX_AUDIO_MB ?? '8'),
     maxDurationSeconds: parseInt(
